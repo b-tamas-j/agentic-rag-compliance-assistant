@@ -1,8 +1,7 @@
 # Agentic RAG Compliance Assistant
 
 > Hungarian tax & accounting compliance chatbot built with **LangGraph**,
-> **Ollama** and **ChromaDB**. Built as a PwC Medior AI Engineer take-home
-> project.
+> **Ollama** and **ChromaDB**. Demo project.
 
 ---
 

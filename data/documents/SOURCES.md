@@ -4,8 +4,8 @@ This folder contains publicly available Hungarian tax guidance PDFs from
 the National Tax and Customs Administration (NAV).
 
 The PDFs are versioned in the repository (~2 MB total). Reproducibility
-matters more than binary bloat for a take-home project: a reviewer can
-clone the repo and run the pipeline without any manual download step.
+matters more than binary bloat for a demo project: anyone can clone the
+repo and run the pipeline without any manual download step.
 
 ## Provenance
 

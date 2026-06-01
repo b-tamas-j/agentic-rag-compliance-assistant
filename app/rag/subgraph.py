@@ -11,9 +11,8 @@ flow as three LangGraph nodes:
    provider this step short-circuits and keeps everything, so the whole
    pipeline can run offline in CI and load tests.
 
-Per the assignment, this subgraph is callable from the main workflow as
-a single unit and **does not** count towards the 5+ node requirement of
-the parent graph.
+This subgraph is callable from the main workflow as a single unit and
+**does not** count towards the 5+ node target of the parent graph.
 """
 
 from __future__ import annotations

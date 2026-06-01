@@ -49,7 +49,7 @@ htmlcov/
 chroma_db/
 data/chroma/
 # Source documents (NAV publications) ARE versioned in this repo - small size,
-# reproducibility outweighs binary bloat for a take-home project.
+# reproducibility outweighs binary bloat for a demo project.
 # Ollama model cache (if mounted locally)
 .ollama/
 # Eval / load test artifacts
