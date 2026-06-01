@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     # --- LLM provider ---
     llm_provider: Literal["ollama", "dummy"] = "dummy"
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:7b"
-    ollama_embedding_model: str = "bge-m3"
+    ollama_model: str = "qwen2.5:14b-instruct"
+    ollama_embedding_model: str = "nomic-embed-text"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 1024
 
