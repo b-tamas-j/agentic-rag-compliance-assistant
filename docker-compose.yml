@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------
+# Agentic RAG Compliance Assistant - local stack
+# ---------------------------------------------------------------
+# Services:
+#   - ollama : local LLM + embedding server
+#   - app    : Streamlit UI + LangGraph agent
+#
+# Volumes:
+#   - ollama_models : persists downloaded model weights
+#   - chroma_data   : persists the vector store
+# ---------------------------------------------------------------
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: compliance-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: compliance-app
+    depends_on:
+      ollama:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Override base URL so the app talks to the ollama service by name
+      OLLAMA_BASE_URL: http://ollama:11434
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data/documents:/app/data/documents:ro
+      - chroma_data:/app/data/chroma
+    restart: unless-stopped
+
+volumes:
+  ollama_models:
+  chroma_data:

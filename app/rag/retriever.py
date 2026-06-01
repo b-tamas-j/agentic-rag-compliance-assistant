@@ -1,0 +1,1 @@
+"""ChromaDB-backed retriever (skeleton)."""
