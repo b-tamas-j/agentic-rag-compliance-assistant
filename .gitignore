@@ -1,0 +1,62 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+
+# --- Virtualenvs ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Environments / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Testing / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Project-specific ---
+# Persisted vector store
+chroma_db/
+data/chroma/
+# Raw PDFs (downloaded, not versioned)
+data/documents/*.pdf
+data/documents/*.PDF
+!data/documents/.gitkeep
+# Ollama model cache (if mounted locally)
+.ollama/
+# Eval / load test artifacts
+eval/results/
+eval/runs/
+# Logs
+*.log
+logs/
