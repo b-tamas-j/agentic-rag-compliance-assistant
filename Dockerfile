@@ -1,13 +1,15 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------
 # Agentic RAG Compliance Assistant - application image
+# Uses `uv` for fast, reproducible installs from uv.lock.
 # ---------------------------------------------------------------
 FROM python:3.11-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -22,14 +24,20 @@ RUN apt-get update \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps first to leverage Docker layer cache
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
+# Install uv (single static binary)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Install dependencies first (layer cache friendly): copy only manifests
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
 
 # Copy source
 COPY app ./app
 COPY ui ./ui
 COPY eval ./eval
+
+# Install the project itself (skip dev extras for slimmer image)
+RUN uv sync --frozen --no-dev
 
 EXPOSE 8501
 

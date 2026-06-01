@@ -54,15 +54,18 @@ docker compose up --build
 
 Then open <http://localhost:8501>.
 
-### Option B - Local Python
+### Option B - Local Python (with `uv`)
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+git clone <repo-url>
+cd agentic-rag-compliance-assistant
 Copy-Item .env.example .env
-streamlit run ui/streamlit_app.py
+uv sync --extra dev
+uv run streamlit run ui/streamlit_app.py
 ```
+
+`uv sync` creates a `.venv/` from `uv.lock`, guaranteeing the exact same
+dependency versions as in CI / Docker.
 
 ## 5. Evaluation results
 
