@@ -48,10 +48,8 @@ htmlcov/
 # Persisted vector store
 chroma_db/
 data/chroma/
-# Raw PDFs (downloaded, not versioned)
-data/documents/*.pdf
-data/documents/*.PDF
-!data/documents/.gitkeep
+# Source documents (NAV publications) ARE versioned in this repo - small size,
+# reproducibility outweighs binary bloat for a take-home project.
 # Ollama model cache (if mounted locally)
 .ollama/
 # Eval / load test artifacts
