@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:14b-instruct"
     ollama_embedding_model: str = "bge-m3"
+    # Independent judge model for LLM-as-judge evaluation (avoid self-bias).
+    ollama_judge_model: str = "mistral-nemo:12b-instruct"
+    # Smaller / faster model for load testing.
+    ollama_fast_model: str = "aya-expanse:8b"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 1024
 
