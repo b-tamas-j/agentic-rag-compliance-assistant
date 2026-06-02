@@ -110,3 +110,19 @@ def test_graph_runs_tool_when_amount_and_citation_present() -> None:
     assert "tao_calculator" in tool_names
     assert "legal_reference_validator" in tool_names
     assert result.get("final_answer")
+
+
+def test_graph_with_memory_keeps_thread_state() -> None:
+    """Sanity check: opt-in MemorySaver checkpointer stores per-thread history."""
+    _seed_corpus()
+    graph = build_agent_graph(with_memory=True)
+    cfg = {"configurable": {"thread_id": "t-1"}}
+
+    first = graph.invoke({"query": "Mennyi a társasági adó mértéke?"}, config=cfg)
+    assert first.get("final_answer")
+
+    # The checkpointer should hold a snapshot for this thread.
+    state = graph.get_state(cfg)
+    assert state.values.get("query")
+    assert state.values.get("category") == "tao"
+

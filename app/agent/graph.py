@@ -16,6 +16,10 @@ above the 5-node target.
 
 from __future__ import annotations
 
+import logging
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -30,6 +34,8 @@ from app.agent.nodes import (
 )
 from app.agent.state import AgentState
 
+logger = logging.getLogger(__name__)
+
 
 def _route_by_category(state: AgentState) -> str:
     """Branch after classification: in-scope query vs polite refusal."""
@@ -41,8 +47,22 @@ def _route_after_check(state: AgentState) -> str:
     return END if state.get("grounded", True) else "answer_generator"
 
 
-def build_agent_graph() -> CompiledStateGraph:
-    """Compile and return the main agent StateGraph."""
+def build_agent_graph(
+    checkpointer: BaseCheckpointSaver | None = None,
+    *,
+    with_memory: bool = False,
+) -> CompiledStateGraph:
+    """Compile and return the main agent StateGraph.
+
+    Args:
+        checkpointer: Optional LangGraph checkpointer for multi-turn
+            conversations. If supplied, ``with_memory`` is ignored.
+        with_memory: When ``True`` and no explicit ``checkpointer`` is
+            given, attach an in-process :class:`MemorySaver`. Used by
+            the Streamlit UI so each session keeps its own ``thread_id``
+            history. Tests leave both args at their default to get a
+            stateless, fully deterministic graph.
+    """
     builder = StateGraph(AgentState)
 
     builder.add_node("classify_query", classify_query_node)
@@ -80,7 +100,14 @@ def build_agent_graph() -> CompiledStateGraph:
 
     builder.add_edge("off_topic_handler", END)
 
-    return builder.compile()
+    if checkpointer is None and with_memory:
+        checkpointer = MemorySaver()
+
+    logger.debug(
+        "Compiling agent graph (checkpointer=%s)",
+        type(checkpointer).__name__ if checkpointer else None,
+    )
+    return builder.compile(checkpointer=checkpointer) if checkpointer else builder.compile()
 
 
 __all__ = ["build_agent_graph"]

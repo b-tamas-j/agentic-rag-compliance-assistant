@@ -7,6 +7,7 @@ dummy provider so the whole graph runs offline in tests and CI.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -16,6 +17,8 @@ from pydantic import BaseModel, Field
 
 from app.agent.state import AgentState
 from app.agent.tools import legal_reference_validator, tao_calculator
+
+logger = logging.getLogger(__name__)
 from app.config import get_settings
 from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
@@ -71,6 +74,7 @@ _CLASSIFY_PROMPT = (
 
 def classify_query_node(state: AgentState) -> dict[str, Any]:
     """Decide whether the question is in scope (TAO) or off-topic."""
+    logger.debug("classify_query_node: query=%r", state.get("query"))
     query = state["query"].lower()
     chat = get_chat_model("fast")
 
@@ -103,6 +107,7 @@ _DECOMPOSE_PROMPT = (
 
 def query_decomposer_node(state: AgentState) -> dict[str, Any]:
     """Split a complex query into 1-3 retrievable sub-questions."""
+    logger.debug("query_decomposer_node: query=%r", state.get("query"))
     query = state["query"]
     chat = get_chat_model("main")
 
@@ -124,6 +129,7 @@ def query_decomposer_node(state: AgentState) -> dict[str, Any]:
 def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     """Run the RAG subgraph for every sub-query and merge the results."""
     sub_queries = state.get("sub_queries") or [state["query"]]
+    logger.debug("retrieve_documents_node: %d sub-queries", len(sub_queries))
     rag = _get_rag_subgraph()
 
     seen: set[str] = set()
@@ -167,6 +173,7 @@ def tool_executor_node(state: AgentState) -> dict[str, Any]:
       the query.
     """
     query = state["query"]
+    logger.debug("tool_executor_node: query=%r", query)
     results: list[dict] = []
 
     amount = _parse_huf(query)
@@ -192,6 +199,7 @@ def tool_executor_node(state: AgentState) -> dict[str, Any]:
         except Exception as exc:
             results.append({"tool": "legal_reference_validator", "error": str(exc)})
 
+    logger.debug("tool_executor_node: %d tool calls", len(results))
     return {"tool_results": results}
 
 
@@ -226,6 +234,9 @@ def answer_generator_node(state: AgentState) -> dict[str, Any]:
     docs = state.get("retrieved_docs", [])
     tools = state.get("tool_results", [])
     query = state["query"]
+    logger.debug(
+        "answer_generator_node: %d docs, %d tool results", len(docs), len(tools)
+    )
     chat = get_chat_model("main")
 
     if isinstance(chat, DummyChatModel):
@@ -267,6 +278,7 @@ def hallucination_checker_node(state: AgentState) -> dict[str, Any]:
     chat = get_chat_model("judge")
 
     retries = state.get("hallucination_retries", 0)
+    logger.debug("hallucination_checker_node: retry=%d", retries)
 
     if isinstance(chat, DummyChatModel):
         # Dummy: trust the draft (load tests / CI shouldn't loop forever).
@@ -304,6 +316,7 @@ _OFF_TOPIC_MESSAGE = (
 
 def off_topic_handler_node(state: AgentState) -> dict[str, Any]:
     """Return a polite refusal for off-topic questions."""
+    logger.debug("off_topic_handler_node: returning refusal")
     return {"final_answer": _OFF_TOPIC_MESSAGE, "grounded": True}
 
 
