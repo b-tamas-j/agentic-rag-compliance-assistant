@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
+from app.llm.text import looks_repetitive, strip_think_tags
 from app.rag.retriever import get_retriever
 
 
@@ -46,18 +47,15 @@ class RAGState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 # Structured output for the grading step
 # ---------------------------------------------------------------------------
-class RelevanceVerdict(BaseModel):
-    """LLM-as-grader output for a single retrieved chunk."""
+class BatchRelevanceVerdict(BaseModel):
+    """LLM-as-grader output for a batch of retrieved chunks."""
 
-    is_relevant: bool = Field(
+    relevant_indexes: list[int] = Field(
+        default_factory=list,
         description=(
-            "True if the chunk contains information that helps answer the "
-            "question. False if it is off-topic or only tangentially related."
-        )
-    )
-    reason: str = Field(
-        default="",
-        description="One short sentence explaining the decision (Hungarian).",
+            "1-based indexes of the chunks that are relevant to the question. "
+            "Empty list means none of the chunks are relevant."
+        ),
     )
 
 
@@ -73,11 +71,12 @@ _QUERY_TRANSFORM_PROMPT = (
 )
 
 _GRADE_PROMPT = (
-    "Te egy magyar számviteli/adójogi szakértő vagy. Döntsd el, hogy az "
-    "alábbi forrásrészlet RELEVÁNS-e a feltett kérdés megválaszolásához.\n\n"
+    "Te egy magyar számviteli/adójogi szakértő vagy. Az alábbi forrás"
+    "részletek közül döntsd el, melyek RELEVÁNSAK a kérdés megválaszolásához. "
+    "Add vissza a releváns részletek 1-alapú sorszámát a megadott "
+    "szerkezetben. Ha egyik sem releváns, üres listát adj vissza.\n\n"
     "Kérdés: {query}\n\n"
-    "Forrásrészlet:\n{chunk}\n\n"
-    "Add vissza a döntést a megadott szerkezetben."
+    "Forrásrészletek:\n{chunks}"
 )
 
 
@@ -86,12 +85,18 @@ _GRADE_PROMPT = (
 # ---------------------------------------------------------------------------
 def _query_transform_node(state: RAGState) -> RAGState:
     query = state["query"]
-    chat = get_chat_model("main")
+    # Use the 'fast' role: query rewriting is short and shouldn't tie up the
+    # big answer model when a mixed profile is configured.
+    chat = get_chat_model("fast")
     if isinstance(chat, DummyChatModel):
         # Skip LLM rewriting under the dummy provider for determinism.
         return {"rewritten_query": query}
     response = chat.invoke([HumanMessage(content=_QUERY_TRANSFORM_PROMPT.format(query=query))])
-    rewritten = (response.content or "").strip() or query
+    rewritten = strip_think_tags(response.content or "") or query
+    # If the small model degenerated into a repetition loop, fall back to
+    # the original query rather than feeding garbage into the retriever.
+    if looks_repetitive(rewritten):
+        rewritten = query
     return {"rewritten_query": rewritten}
 
 
@@ -103,28 +108,39 @@ def _retrieve_node(state: RAGState) -> RAGState:
     return {"retrieved_docs": docs}
 
 
+def _format_chunks_for_grading(docs: list[Document]) -> str:
+    return "\n\n".join(
+        f"[{i}] {doc.page_content[:400]}" for i, doc in enumerate(docs, start=1)
+    )
+
+
 def _grade_documents_node(state: RAGState) -> RAGState:
     docs = state.get("retrieved_docs", [])
     query = state.get("rewritten_query") or state["query"]
-    chat = get_chat_model("main")
+    # Grading is a yes/no judgement per chunk; use the 'fast' role so the
+    # heavy answer model is reserved for the final draft.
+    chat = get_chat_model("fast")
 
     # Dummy provider can't honour structured output; keep everything.
     if isinstance(chat, DummyChatModel) or not docs:
         return {"relevant_docs": docs}
 
-    grader = chat.with_structured_output(RelevanceVerdict)
-    kept: list[Document] = []
-    for doc in docs:
-        prompt = _GRADE_PROMPT.format(query=query, chunk=doc.page_content)
-        try:
-            verdict: RelevanceVerdict = grader.invoke(prompt)  # type: ignore[assignment]
-        except Exception:
-            # If the model fails to produce valid structured output, be
-            # conservative and keep the chunk so we don't lose recall.
-            kept.append(doc)
-            continue
-        if verdict.is_relevant:
-            kept.append(doc)
+    grader = chat.with_structured_output(BatchRelevanceVerdict)
+    prompt = _GRADE_PROMPT.format(
+        query=query, chunks=_format_chunks_for_grading(docs)
+    )
+    try:
+        verdict: BatchRelevanceVerdict = grader.invoke(prompt)  # type: ignore[assignment]
+    except Exception:
+        # If the model fails to produce valid structured output, keep
+        # everything so we don't lose recall.
+        return {"relevant_docs": docs}
+
+    kept = [
+        docs[i - 1]
+        for i in verdict.relevant_indexes
+        if 1 <= i <= len(docs)
+    ]
     # Always return at least one doc to give the answer generator a chance.
     return {"relevant_docs": kept or docs}
 

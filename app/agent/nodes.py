@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 from app.config import get_settings
 from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
+from app.llm.text import looks_repetitive, strip_think_tags
 from app.rag.subgraph import build_rag_subgraph
 
 # Cached compiled RAG subgraph (built lazily on first call).
@@ -89,7 +90,9 @@ def classify_query_node(state: AgentState) -> dict[str, Any]:
             _CLASSIFY_PROMPT.format(query=state["query"])
         )
         category = "tao" if verdict.category.lower().strip() == "tao" else "off_topic"
+        logger.debug("classify_query_node: LLM verdict=%r -> %s", verdict.category, category)
     except Exception:
+        logger.exception("classify_query_node: LLM classifier failed, falling back to keywords")
         category = "tao" if any(kw in query for kw in _TAO_KEYWORDS) else "off_topic"
     return {"category": category}
 
@@ -109,16 +112,23 @@ def query_decomposer_node(state: AgentState) -> dict[str, Any]:
     """Split a complex query into 1-3 retrievable sub-questions."""
     logger.debug("query_decomposer_node: query=%r", state.get("query"))
     query = state["query"]
-    chat = get_chat_model("main")
+    # Decomposition is a lightweight rewrite; route it through the 'fast'
+    # role so the heavy answer model only runs once per question.
+    chat = get_chat_model("fast")
 
     if isinstance(chat, DummyChatModel):
         return {"sub_queries": [query]}
 
     try:
         response = chat.invoke([HumanMessage(content=_DECOMPOSE_PROMPT.format(query=query))])
-        lines = [ln.strip(" -•\t") for ln in (response.content or "").splitlines() if ln.strip()]
+        cleaned = strip_think_tags(response.content or "")
+        lines = [ln.strip(" -•\t") for ln in cleaned.splitlines() if ln.strip()]
+        # Drop sub-queries that are obvious small-model degeneration loops
+        # (e.g. the same 4-gram repeated dozens of times).
+        lines = [ln for ln in lines if not looks_repetitive(ln)]
         sub_queries = lines[:3] or [query]
     except Exception:
+        logger.exception("query_decomposer_node: decomposition failed, using original query")
         sub_queries = [query]
     return {"sub_queries": sub_queries}
 
@@ -255,7 +265,7 @@ def answer_generator_node(state: AgentState) -> dict[str, Any]:
         tools=tools or "(nincs)",
     )
     response = chat.invoke([HumanMessage(content=prompt)])
-    return {"draft_answer": (response.content or "").strip()}
+    return {"draft_answer": strip_think_tags(response.content or "")}
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +304,10 @@ def hallucination_checker_node(state: AgentState) -> dict[str, Any]:
             _GROUNDEDNESS_PROMPT.format(context=_format_context(docs), answer=draft)
         )
         grounded = bool(verdict.grounded)
+        logger.debug("hallucination_checker_node: grounded=%s reason=%r", grounded, verdict.reason)
     except Exception:
         # On judge failure, accept the draft to avoid infinite retries.
+        logger.exception("hallucination_checker_node: judge failed, accepting draft")
         grounded = True
 
     settings = get_settings()
