@@ -55,6 +55,7 @@ data/chroma/
 # Eval / load test artifacts
 eval/results/
 eval/runs/
+reports/
 # Logs
 *.log
 logs/

@@ -1,0 +1,122 @@
+[
+  {
+    "id": "q01",
+    "category": "tao",
+    "question": "Mennyi a társasági adó mértéke Magyarországon?",
+    "expected_sections": ["19. §"],
+    "expected_terms": ["9", "százalék"],
+    "topic": "adómérték"
+  },
+  {
+    "id": "q02",
+    "category": "tao",
+    "question": "Hány százalékos korlátig vehető figyelembe az elhatárolt veszteség az adóalap megállapításakor?",
+    "expected_sections": ["17. §"],
+    "expected_terms": ["50", "elhatárolt veszteség"],
+    "topic": "veszteségelhatárolás"
+  },
+  {
+    "id": "q03",
+    "category": "tao",
+    "question": "Hány évre vihető előre az elhatárolt veszteség a társasági adóban?",
+    "expected_sections": ["17. §"],
+    "expected_terms": ["5", "év"],
+    "topic": "veszteségelhatárolás"
+  },
+  {
+    "id": "q04",
+    "category": "tao",
+    "question": "Mit nevezünk jövedelem-(nyereség-)minimumnak és mikor kell alkalmazni?",
+    "expected_sections": ["6. §"],
+    "expected_terms": ["jövedelem-(nyereség-)minimum", "2"],
+    "topic": "jövedelem-minimum"
+  },
+  {
+    "id": "q05",
+    "category": "tao",
+    "question": "Mi a növekedési adóhitel (NAHI) lényege, és milyen feltétellel vehető igénybe?",
+    "expected_sections": ["26/A. §"],
+    "expected_terms": ["növekedési adóhitel", "halasztott"],
+    "topic": "NAHI"
+  },
+  {
+    "id": "q06",
+    "category": "tao",
+    "question": "Mekkora lehet legfeljebb a TAO-felajánlás összege az éves fizetendő adóhoz képest?",
+    "expected_sections": ["24/A. §"],
+    "expected_terms": ["80", "felajánlás"],
+    "topic": "TAO-felajánlás"
+  },
+  {
+    "id": "q07",
+    "category": "tao",
+    "question": "Milyen célokra lehet TAO-felajánlást tenni a hatályos szabályok szerint?",
+    "expected_sections": ["24/A. §"],
+    "expected_terms": ["látvány-csapatsport", "film"],
+    "topic": "TAO-felajánlás"
+  },
+  {
+    "id": "q08",
+    "category": "tao",
+    "question": "Hogyan adózik egy közhasznú nonprofit gazdasági társaság a társasági adó szempontjából?",
+    "expected_sections": ["13/A. §"],
+    "expected_terms": ["közhasznú", "kedvezményezett"],
+    "topic": "nonprofit"
+  },
+  {
+    "id": "q09",
+    "category": "tao",
+    "question": "Adóalanya-e a társasági adónak a vagyonkezelő alapítvány?",
+    "expected_sections": ["2. §"],
+    "expected_terms": ["vagyonkezelő alapítvány", "adóalany"],
+    "topic": "alanyi hatály"
+  },
+  {
+    "id": "q10",
+    "category": "tao",
+    "question": "Mikor kell a társasági adó bevallását benyújtani a naptári éves adózónál?",
+    "expected_sections": ["5. §"],
+    "expected_terms": ["május", "31"],
+    "topic": "bevallás határidő"
+  },
+  {
+    "id": "q11",
+    "category": "tao",
+    "question": "Mit jelent a fejlesztési adókedvezmény és mekkora mértékben csökkentheti a számított adót?",
+    "expected_sections": ["22/B. §"],
+    "expected_terms": ["fejlesztési adókedvezmény", "80"],
+    "topic": "adókedvezmény"
+  },
+  {
+    "id": "q12",
+    "category": "tao",
+    "question": "Hogyan kell adóalap-csökkentő tételként kezelni a kapott osztalékot a társasági adóban?",
+    "expected_sections": ["7. §"],
+    "expected_terms": ["osztalék", "csökkentő"],
+    "topic": "adóalap-korrekció"
+  },
+  {
+    "id": "q13",
+    "category": "tao",
+    "question": "Mit ír elő a Tao. tv. a transzferár-nyilvántartással kapcsolatban kapcsolt vállalkozások esetén?",
+    "expected_sections": ["18. §"],
+    "expected_terms": ["szokásos piaci ár", "kapcsolt"],
+    "topic": "transzferár"
+  },
+  {
+    "id": "q14",
+    "category": "tao",
+    "question": "Számítsd ki a fizetendő társasági adót 10 000 000 Ft adóalap és 3 000 000 Ft elhatárolt veszteség mellett.",
+    "expected_sections": ["17. §", "19. §"],
+    "expected_terms": ["9", "765"],
+    "topic": "számítás"
+  },
+  {
+    "id": "q15",
+    "category": "off_topic",
+    "question": "Hogyan készítsek brassói aprópecsenyét?",
+    "expected_sections": [],
+    "expected_terms": ["társasági adó"],
+    "topic": "off-topic"
+  }
+]
