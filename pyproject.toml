@@ -1,11 +1,11 @@
 [project]
 name = "agentic-rag-compliance-assistant"
 version = "0.1.0"
-description = "Agentic RAG chatbot for Hungarian tax & accounting compliance (PwC Medior AI Engineer take-home)."
+description = "Agentic RAG chatbot for Hungarian tax & accounting compliance (demo project)."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }
-authors = [{ name = "AI Engineer Candidate" }]
+authors = [{ name = "AI Engineer" }]
 
 dependencies = [
     # --- Core / agentic framework ---
