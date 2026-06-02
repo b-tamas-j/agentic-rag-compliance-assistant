@@ -20,6 +20,11 @@ import streamlit as st
 from app.agent import build_agent_graph
 from app.config import get_settings
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logging.getLogger("app").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
