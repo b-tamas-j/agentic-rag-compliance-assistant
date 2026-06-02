@@ -33,8 +33,6 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 # Copy source
 COPY app ./app
-COPY ui ./ui
-COPY eval ./eval
 
 # Install the project itself (skip dev extras for slimmer image)
 RUN uv sync --frozen --no-dev
@@ -42,7 +40,7 @@ RUN uv sync --frozen --no-dev
 EXPOSE 8501
 
 # Streamlit needs to bind to 0.0.0.0 inside containers
-CMD ["streamlit", "run", "ui/streamlit_app.py", \
+CMD ["streamlit", "run", "app/ui/streamlit_app.py", \
      "--server.address=0.0.0.0", \
      "--server.port=8501", \
      "--server.headless=true"]
