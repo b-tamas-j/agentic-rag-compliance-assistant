@@ -59,7 +59,6 @@ class GroundednessVerdict(BaseModel):
     grounded: bool = Field(
         description="True iff every factual claim in the draft is supported by the sources."
     )
-    reason: str = Field(default="", description="Short Hungarian explanation.")
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +93,13 @@ def classify_query_node(state: AgentState) -> dict[str, Any]:
     except Exception:
         logger.exception("classify_query_node: LLM classifier failed, falling back to keywords")
         category = "tao" if any(kw in query for kw in _TAO_KEYWORDS) else "off_topic"
+
+    # Safety net for small classifiers: if the query plainly mentions a TAO
+    # keyword, never trust an LLM 'off_topic' verdict. We only override in
+    # one direction so genuinely off-topic queries still get refused.
+    if category == "off_topic" and any(kw in query for kw in _TAO_KEYWORDS):
+        logger.debug("classify_query_node: keyword override 'off_topic' -> 'tao'")
+        category = "tao"
     return {"category": category}
 
 
@@ -221,6 +227,8 @@ _ANSWER_PROMPT = (
     "kizárólag a megadott források alapján. Hivatkozz a paragrafusokra (pl. "
     "'Tao. tv. 19. §'), ahol releváns. Ha a források nem fedik le a kérdést, "
     "ezt írd le őszintén.\n\n"
+    "Válaszolj TÖMÖREN, legfeljebb 4-5 mondatban. Ne ismételd a kérdést, és "
+    "ne sorolj fel mindent listában — csak a lényeget add vissza.\n\n"
     "Kérdés: {query}\n\n"
     "Források:\n{context}\n\n"
     "Eszközök eredménye (ha van): {tools}\n\n"
@@ -275,7 +283,7 @@ _GROUNDEDNESS_PROMPT = (
     "Ellenőrizd, hogy az alábbi VÁLASZ minden ténymegállapítása alá van-e "
     "támasztva a megadott FORRÁSOK-kal. Ha bármi nem szerepel a forrásokban, "
     "akkor 'grounded=false'. Ha minden állítás visszavezethető a forrásokra, "
-    "akkor 'grounded=true'.\n\n"
+    "akkor 'grounded=true'. Csak a logikai ítéletet add vissza, indoklás nélkül.\n\n"
     "FORRÁSOK:\n{context}\n\n"
     "VÁLASZ:\n{answer}"
 )
@@ -304,7 +312,7 @@ def hallucination_checker_node(state: AgentState) -> dict[str, Any]:
             _GROUNDEDNESS_PROMPT.format(context=_format_context(docs), answer=draft)
         )
         grounded = bool(verdict.grounded)
-        logger.debug("hallucination_checker_node: grounded=%s reason=%r", grounded, verdict.reason)
+        logger.debug("hallucination_checker_node: grounded=%s", grounded)
     except Exception:
         # On judge failure, accept the draft to avoid infinite retries.
         logger.exception("hallucination_checker_node: judge failed, accepting draft")
