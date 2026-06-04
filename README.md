@@ -304,8 +304,13 @@ Outputs land in `reports/eval.csv` plus a stdout summary.
 > `RAG_RETRIEVAL_MODE=dense|bm25|hybrid` switch, and the
 > `source_hint`-based source filter (see §11) were implemented
 > *after* this evaluation run and are **not** reflected in the figures
-> below. Re-running the eval under those new modes is left as a
-> follow-up because a single full run takes ~2.5 h on this box.
+> below. A 6-question smoke evaluation under the new hybrid + source-
+> filter modes (and the English-instruction / Hungarian-output prompt
+> rewrite) is committed at
+> [`reports/eval_aya8b_hybrid_smoke.csv`](reports/eval_aya8b_hybrid_smoke.csv)
+> for qualitative comparison; the headline metrics below remain the
+> deliverable baseline because a full 15-question re-run takes ~2.5 h
+> on this box.
 
 I ran the full 15-question evaluation against Ollama with the mixed
 profile (main = `aya-expanse:8b`, fast + judge = `qwen3:0.6b`,
