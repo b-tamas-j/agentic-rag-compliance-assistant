@@ -11,8 +11,17 @@ from typing import Literal, TypedDict
 
 from langchain_core.documents import Document
 
-
 QueryCategory = Literal["tao", "off_topic"]
+
+# Coarse topical hint used to narrow Chroma/BM25 retrieval to one or two
+# source PDFs. ``None`` (or ``"general"``) means no filter.
+SourceHint = Literal[
+    "nonprofit",     # 13+A+nonprofit+szervezetek+adózása+2025.01.27.pdf
+    "calculation",   # 41 A társasági adó legfontosabb szabályai 2025.09.01.pdf
+    "offering",      # 55 Tao-felajánlás 2025.07.21.pdf
+    "credit",        # 93 Növekedési adóhitel 2025.01.17.pdf
+    "general",
+]
 
 
 class AgentState(TypedDict, total=False):
@@ -23,6 +32,7 @@ class AgentState(TypedDict, total=False):
 
     # --- Classification + decomposition ---
     category: QueryCategory
+    source_hint: SourceHint
     sub_queries: list[str]
 
     # --- Retrieval ---

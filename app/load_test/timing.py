@@ -13,8 +13,8 @@ import contextlib
 import statistics
 import time
 from collections import defaultdict
-from collections.abc import Iterator
-from typing import Any, Callable
+from collections.abc import Callable, Iterator
+from typing import Any
 
 from app.agent import graph as graph_mod
 from app.agent import nodes as nodes_mod

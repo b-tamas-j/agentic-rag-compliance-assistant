@@ -70,7 +70,7 @@ def _write_csv(rows: list[dict[str, Any]], out_path: Path) -> None:
     fieldnames: list[str] = []
     seen: set[str] = set()
     for r in rows:
-        for k in r.keys():
+        for k in r:
             if k not in seen:
                 seen.add(k)
                 fieldnames.append(k)

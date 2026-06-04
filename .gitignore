@@ -48,6 +48,7 @@ htmlcov/
 # Persisted vector store
 chroma_db/
 data/chroma/
+data/chroma_dummy/
 # Source documents (NAV publications) ARE versioned in this repo - small size,
 # reproducibility outweighs binary bloat for a demo project.
 # Ollama model cache (if mounted locally)
@@ -55,7 +56,10 @@ data/chroma/
 # Eval / load test artifacts
 eval/results/
 eval/runs/
-reports/
+# Keep reports/ in the repo so committed sample runs (eval CSV, load test
+# CSV + PNG) are available to reviewers without having to re-run the
+# multi-hour pipeline locally. Logs inside reports/ stay ignored.
+reports/*.log
 # Logs
 *.log
 logs/

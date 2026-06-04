@@ -15,14 +15,21 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
+from app.agent.prompts import (
+    ANSWER_PROMPT,
+    CLASSIFY_PROMPT,
+    DECOMPOSE_PROMPT,
+    GROUNDEDNESS_PROMPT,
+)
 from app.agent.state import AgentState
 from app.agent.tools import legal_reference_validator, tao_calculator
-
-logger = logging.getLogger(__name__)
 from app.config import get_settings
 from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
+from app.llm.text import looks_repetitive, strip_think_tags
 from app.rag.subgraph import build_rag_subgraph
+
+logger = logging.getLogger(__name__)
 
 # Cached compiled RAG subgraph (built lazily on first call).
 _rag_subgraph = None
@@ -45,6 +52,60 @@ _TAO_KEYWORDS = (
 )
 
 
+# Map source-hint labels to the actual PDF filenames in data/documents/.
+# Used to translate the classifier's coarse topic guess into a Chroma /
+# BM25 metadata filter at retrieval time.
+SOURCE_HINT_FILES: dict[str, list[str]] = {
+    "nonprofit": ["13+A+nonprofit+szervezetek+adózása+2025.01.27.pdf"],
+    "calculation": ["41 A társasági adó legfontosabb szabályai 2025.09.01.pdf"],
+    "offering": ["55 Tao-felajánlás 2025.07.21.pdf"],
+    "credit": ["93 Növekedési adóhitel 2025.01.17.pdf"],
+    # "general" intentionally omitted -> no filter.
+}
+
+
+# Keyword fallback for source classification (lowercase, Hungarian).
+# The lists are intentionally conservative: each keyword maps unambiguously
+# to ONE of the four bundled PDFs. Cross-cutting concepts (e.g. "osztalék",
+# "adó", general "társasági adó") are deliberately left out so the hint
+# falls back to "general" -> no source filter -> broad recall.
+_SOURCE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "nonprofit": (
+        "nonprofit", "közhasznú", "alapítvány", "egyesület",
+        "civil szervezet", "egyházi", "köztestület",
+    ),
+    "offering": (
+        "felajánlás", "tao-felajánlás", "kedvezményezett célok",
+        "látvány-csapatsport", "filmalkotás", "előadó-művészeti",
+    ),
+    "credit": (
+        "növekedési adóhitel", "nahi", "adóhitel",
+        "halasztott adófizetés",
+    ),
+    "calculation": (
+        # Core mechanics that uniquely live in the "general rules" PDF.
+        "adóalap", "adómérték", "elhatárolt veszteség",
+        "veszteségelhatárolás", "adókedvezmény",
+        "jövedelem-minimum", "nyereség-minimum",
+        "transzferár", "szokásos piaci ár",
+        "fejlesztési adókedvezmény", "adóelőleg",
+        "bevallás", "naptári év", "adóév",
+        "számítás", "kiszámít",
+    ),
+}
+
+
+def _keyword_source_hint(query: str) -> str:
+    """Deterministic source-hint guess used by the dummy provider and as
+    a fallback when the LLM classifier fails or returns 'general'.
+    """
+    q = query.lower()
+    for hint, kws in _SOURCE_KEYWORDS.items():
+        if any(kw in q for kw in kws):
+            return hint
+    return "general"
+
+
 # ---------------------------------------------------------------------------
 # Structured outputs
 # ---------------------------------------------------------------------------
@@ -52,28 +113,36 @@ class ClassificationVerdict(BaseModel):
     category: str = Field(
         description="Either 'tao' (Hungarian corporate income tax) or 'off_topic'."
     )
+    source_hint: str = Field(
+        default="general",
+        description=(
+            "Topical hint identifying the most relevant source PDF. One of: "
+            "'nonprofit' (közhasznú/alapítvány), 'calculation' (általános "
+            "TAO-szabályok, adóalap, adómérték, veszteség), 'offering' "
+            "(Tao-felajánlás), 'credit' (növekedési adóhitel/NAHI), or "
+            "'general' if no single source dominates."
+        ),
+    )
 
 
 class GroundednessVerdict(BaseModel):
     grounded: bool = Field(
         description="True iff every factual claim in the draft is supported by the sources."
     )
-    reason: str = Field(default="", description="Short Hungarian explanation.")
 
 
 # ---------------------------------------------------------------------------
 # 1. classify_query
 # ---------------------------------------------------------------------------
-_CLASSIFY_PROMPT = (
-    "Te egy magyar adójogi asszisztens vagy. Döntsd el, hogy az alábbi "
-    "kérdés a TÁRSASÁGI ADÓ (Tao. tv.) témakörébe tartozik-e.\n\n"
-    "Kérdés: {query}\n\n"
-    "Válaszolj a megadott szerkezetben: 'tao' vagy 'off_topic'."
-)
+_VALID_SOURCE_HINTS = {"nonprofit", "calculation", "offering", "credit", "general"}
 
 
 def classify_query_node(state: AgentState) -> dict[str, Any]:
-    """Decide whether the question is in scope (TAO) or off-topic."""
+    """Decide whether the question is in scope (TAO) or off-topic.
+
+    Also returns a coarse ``source_hint`` used downstream to filter the
+    retriever to the most relevant PDF.
+    """
     logger.debug("classify_query_node: query=%r", state.get("query"))
     query = state["query"].lower()
     chat = get_chat_model("fast")
@@ -81,44 +150,64 @@ def classify_query_node(state: AgentState) -> dict[str, Any]:
     if isinstance(chat, DummyChatModel):
         # Deterministic keyword match for the offline pipeline.
         category = "tao" if any(kw in query for kw in _TAO_KEYWORDS) else "off_topic"
-        return {"category": category}
+        hint = _keyword_source_hint(query) if category == "tao" else "general"
+        return {"category": category, "source_hint": hint}
 
     classifier = chat.with_structured_output(ClassificationVerdict)
+    hint = "general"
     try:
         verdict: ClassificationVerdict = classifier.invoke(  # type: ignore[assignment]
-            _CLASSIFY_PROMPT.format(query=state["query"])
+            CLASSIFY_PROMPT.format(query=state["query"])
         )
         category = "tao" if verdict.category.lower().strip() == "tao" else "off_topic"
+        raw_hint = (verdict.source_hint or "general").lower().strip()
+        hint = raw_hint if raw_hint in _VALID_SOURCE_HINTS else "general"
+        logger.debug(
+            "classify_query_node: LLM verdict=%r/%r -> %s/%s",
+            verdict.category, verdict.source_hint, category, hint,
+        )
     except Exception:
+        logger.exception("classify_query_node: LLM classifier failed, falling back to keywords")
         category = "tao" if any(kw in query for kw in _TAO_KEYWORDS) else "off_topic"
-    return {"category": category}
+
+    # Safety net for small classifiers: if the query plainly mentions a TAO
+    # keyword, never trust an LLM 'off_topic' verdict. We only override in
+    # one direction so genuinely off-topic queries still get refused.
+    if category == "off_topic" and any(kw in query for kw in _TAO_KEYWORDS):
+        logger.debug("classify_query_node: keyword override 'off_topic' -> 'tao'")
+        category = "tao"
+    # Backstop the hint with the deterministic keyword map so an LLM that
+    # returns 'general' for an obviously nonprofit-shaped question still
+    # gets the right source filter.
+    if category == "tao" and hint == "general":
+        hint = _keyword_source_hint(query)
+    return {"category": category, "source_hint": hint}
 
 
 # ---------------------------------------------------------------------------
 # 2. query_decomposer
 # ---------------------------------------------------------------------------
-_DECOMPOSE_PROMPT = (
-    "Bontsd az alábbi magyar adójogi kérdést 1-3 önállóan kereshető, "
-    "rövid alkérdésre. Minden alkérdés külön sorba kerüljön, számozás nélkül. "
-    "Ha a kérdés már önmagában elég egyszerű, add vissza egyetlen sorként.\n\n"
-    "Kérdés: {query}"
-)
-
-
 def query_decomposer_node(state: AgentState) -> dict[str, Any]:
     """Split a complex query into 1-3 retrievable sub-questions."""
     logger.debug("query_decomposer_node: query=%r", state.get("query"))
     query = state["query"]
-    chat = get_chat_model("main")
+    # Decomposition is a lightweight rewrite; route it through the 'fast'
+    # role so the heavy answer model only runs once per question.
+    chat = get_chat_model("fast")
 
     if isinstance(chat, DummyChatModel):
         return {"sub_queries": [query]}
 
     try:
-        response = chat.invoke([HumanMessage(content=_DECOMPOSE_PROMPT.format(query=query))])
-        lines = [ln.strip(" -•\t") for ln in (response.content or "").splitlines() if ln.strip()]
+        response = chat.invoke([HumanMessage(content=DECOMPOSE_PROMPT.format(query=query))])
+        cleaned = strip_think_tags(response.content or "")
+        lines = [ln.strip(" -•\t") for ln in cleaned.splitlines() if ln.strip()]
+        # Drop sub-queries that are obvious small-model degeneration loops
+        # (e.g. the same 4-gram repeated dozens of times).
+        lines = [ln for ln in lines if not looks_repetitive(ln)]
         sub_queries = lines[:3] or [query]
     except Exception:
+        logger.exception("query_decomposer_node: decomposition failed, using original query")
         sub_queries = [query]
     return {"sub_queries": sub_queries}
 
@@ -132,10 +221,15 @@ def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     logger.debug("retrieve_documents_node: %d sub-queries", len(sub_queries))
     rag = _get_rag_subgraph()
 
+    source_filter = SOURCE_HINT_FILES.get(state.get("source_hint") or "", [])
+
     seen: set[str] = set()
     merged: list[Document] = []
     for sq in sub_queries:
-        result = rag.invoke({"query": sq})
+        payload: dict[str, Any] = {"query": sq}
+        if source_filter:
+            payload["source_filter"] = source_filter
+        result = rag.invoke(payload)
         for doc in result.get("relevant_docs", []) or result.get("retrieved_docs", []):
             key = f"{doc.metadata.get('source', '')}::{doc.metadata.get('chunk_id', '')}::{doc.page_content[:40]}"
             if key in seen:
@@ -206,26 +300,50 @@ def tool_executor_node(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # 5. answer_generator
 # ---------------------------------------------------------------------------
-_ANSWER_PROMPT = (
-    "Te egy magyar társasági adó szakértő vagy. Válaszolj az alábbi kérdésre "
-    "kizárólag a megadott források alapján. Hivatkozz a paragrafusokra (pl. "
-    "'Tao. tv. 19. §'), ahol releváns. Ha a források nem fedik le a kérdést, "
-    "ezt írd le őszintén.\n\n"
-    "Kérdés: {query}\n\n"
-    "Források:\n{context}\n\n"
-    "Eszközök eredménye (ha van): {tools}\n\n"
-    "Válasz magyarul:"
-)
-
-
 def _format_context(docs: list[Document]) -> str:
     if not docs:
-        return "(nincs releváns forrás)"
+        return "(no relevant source)"
     lines = []
     for i, doc in enumerate(docs, 1):
+        # The section header is the citation-worthy field; the source
+        # filename is shown as opaque metadata so the LLM is less likely
+        # to splice it into a citation. The prompt above also forbids it
+        # explicitly.
+        section = doc.metadata.get("section") or "(no §)"
         src = doc.metadata.get("source", "?")
-        section = doc.metadata.get("section") or "?"
-        lines.append(f"[{i}] ({src}, {section}) {doc.page_content[:400]}")
+        lines.append(
+            f"[{i}] Paragraph: {section}  | (meta: source={src})\n"
+            f"    {doc.page_content[:400]}"
+        )
+    return "\n".join(lines)
+
+
+def _format_tools(tools: list[dict]) -> str:
+    """Render tool results as a short, readable bulleted text block.
+
+    Raw ``repr(list[dict])`` is hostile to small chat models, which then
+    silently ignore the tool output and re-derive the result themselves
+    (often wrongly). A plain bullet summary fixes that. Tool outputs
+    themselves (e.g. ``tao_calculator``'s ``explanation``) remain in
+    Hungarian because they are part of the user-facing answer.
+    """
+    if not tools:
+        return "(no tool was triggered)"
+    lines: list[str] = []
+    for t in tools:
+        name = t.get("tool", "?")
+        if "error" in t:
+            lines.append(f"- {name}: ERROR ({t['error']})")
+            continue
+        out = t.get("output", {})
+        if isinstance(out, dict):
+            # Prefer the human-readable 'explanation' field if present.
+            text = out.get("explanation") or "; ".join(
+                f"{k}={v}" for k, v in out.items() if k != "explanation"
+            )
+        else:
+            text = str(out)
+        lines.append(f"- {name}: {text}")
     return "\n".join(lines)
 
 
@@ -249,28 +367,18 @@ def answer_generator_node(state: AgentState) -> dict[str, Any]:
         draft = f"[dummy] Forrás: {first} | Eszközök: {tool_text}".strip()
         return {"draft_answer": draft}
 
-    prompt = _ANSWER_PROMPT.format(
+    prompt = ANSWER_PROMPT.format(
         query=query,
         context=_format_context(docs),
-        tools=tools or "(nincs)",
+        tools=_format_tools(tools),
     )
     response = chat.invoke([HumanMessage(content=prompt)])
-    return {"draft_answer": (response.content or "").strip()}
+    return {"draft_answer": strip_think_tags(response.content or "")}
 
 
 # ---------------------------------------------------------------------------
 # 6. hallucination_checker
 # ---------------------------------------------------------------------------
-_GROUNDEDNESS_PROMPT = (
-    "Ellenőrizd, hogy az alábbi VÁLASZ minden ténymegállapítása alá van-e "
-    "támasztva a megadott FORRÁSOK-kal. Ha bármi nem szerepel a forrásokban, "
-    "akkor 'grounded=false'. Ha minden állítás visszavezethető a forrásokra, "
-    "akkor 'grounded=true'.\n\n"
-    "FORRÁSOK:\n{context}\n\n"
-    "VÁLASZ:\n{answer}"
-)
-
-
 def hallucination_checker_node(state: AgentState) -> dict[str, Any]:
     """Judge whether the draft answer is grounded in the retrieved sources."""
     draft = state.get("draft_answer", "")
@@ -291,11 +399,13 @@ def hallucination_checker_node(state: AgentState) -> dict[str, Any]:
     judge = chat.with_structured_output(GroundednessVerdict)
     try:
         verdict: GroundednessVerdict = judge.invoke(  # type: ignore[assignment]
-            _GROUNDEDNESS_PROMPT.format(context=_format_context(docs), answer=draft)
+            GROUNDEDNESS_PROMPT.format(context=_format_context(docs), answer=draft)
         )
         grounded = bool(verdict.grounded)
+        logger.debug("hallucination_checker_node: grounded=%s", grounded)
     except Exception:
         # On judge failure, accept the draft to avoid infinite retries.
+        logger.exception("hallucination_checker_node: judge failed, accepting draft")
         grounded = True
 
     settings = get_settings()

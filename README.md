@@ -22,8 +22,8 @@ explored end-to-end (chat UI, evaluation harness, load test).
 5. [Configuration](#5-configuration)
 6. [Data ingestion](#6-data-ingestion)
 7. [Running the chat UI](#7-running-the-chat-ui)
-8. [Evaluation](#8-evaluation)
-9. [Load test](#9-load-test)
+8. [Evaluation](#8-evaluation) — including [sample results](#81-results-from-a-sample-run-aya-expanse8b-mixed-profile)
+9. [Load test](#9-load-test) — including a [sample dummy run, N=100](#91-sample-run-dummy-provider-n100)
 10. [Testing & CI](#10-testing--ci)
 11. [Design decisions and trade-offs](#11-design-decisions-and-trade-offs)
 12. [Future work](#12-future-work)
@@ -144,7 +144,7 @@ data/
   chroma/            Persistent vector store (gitignored)
   eval/              Labelled eval dataset (questions.json)
 reports/             Eval + load-test outputs (gitignored)
-tests/               Pytest suite (44 tests)
+tests/               Pytest suite (60 tests)
 docs/                Architecture notes
 Dockerfile, docker-compose.yml
 ```
@@ -216,6 +216,9 @@ overridden via `.env` or process env vars. The most relevant ones:
 | `OLLAMA_JUDGE_MODEL` | `mistral-nemo:12b` | Separate model for groundedness check |
 | `OLLAMA_EMBEDDING_MODEL` | `bge-m3` | Multilingual embeddings |
 | `RAG_TOP_K` | `5` | Top-K retrieved chunks per sub-query |
+| `RAG_RETRIEVAL_MODE` | `dense` | `dense` (Chroma similarity), `bm25` (keyword), or `hybrid` (RRF of both) |
+| `RAG_BM25_PATH` | `./data/chroma/bm25.pkl` | Where the BM25 index pickle lives |
+| `RAG_RRF_K` | `60` | Reciprocal Rank Fusion constant used in `hybrid` mode |
 | `MAX_HALLUCINATION_RETRIES` | `2` | Cap on the grounded-answer loop |
 | `CHROMA_PERSIST_DIR` | `./data/chroma` | Where ChromaDB persists |
 
@@ -236,6 +239,17 @@ inside long paragraphs, embeds the chunks with `bge-m3`, and upserts
 them into ChromaDB with stable IDs (`{source}::p{page}::c{chunk_id}`)
 so re-running is idempotent. Provenance is preserved in
 `metadata.section` so the validator tool and the UI can surface it.
+
+The same run also builds the BM25 keyword index over those chunks and
+pickles it to `RAG_BM25_PATH` (default `./data/chroma/bm25.pkl`, ~870
+KB on the bundled corpus). If the dense store is already populated and
+you only need to (re)build the keyword index — handy when iterating
+on tokenization without paying the embedding cost — pass
+`--bm25-only`:
+
+```powershell
+uv run python -m app.rag.ingestion --bm25-only
+```
 
 ---
 
@@ -282,6 +296,96 @@ For each question the runner records:
 
 Outputs land in `reports/eval.csv` plus a stdout summary.
 
+### 8.1 Results from a sample run (`aya-expanse:8b` mixed profile)
+
+> **Caveat (post-run change).** The numbers below were measured with
+> the *pre-existing* retrieval setup: dense-only Chroma similarity
+> search, no metadata filter. The BM25 keyword index, the
+> `RAG_RETRIEVAL_MODE=dense|bm25|hybrid` switch, and the
+> `source_hint`-based source filter (see §11) were implemented
+> *after* this evaluation run and are **not** reflected in the figures
+> below. A 6-question smoke evaluation under the new hybrid + source-
+> filter modes (and the English-instruction / Hungarian-output prompt
+> rewrite) is committed at
+> [`reports/eval_aya8b_hybrid_smoke.csv`](reports/eval_aya8b_hybrid_smoke.csv)
+> for qualitative comparison; the headline metrics below remain the
+> deliverable baseline because a full 15-question re-run takes ~2.5 h
+> on this box.
+
+I ran the full 15-question evaluation against Ollama with the mixed
+profile (main = `aya-expanse:8b`, fast + judge = `qwen3:0.6b`,
+`RAG_TOP_K=3`, `LLM_MAX_TOKENS=400`, `MAX_HALLUCINATION_RETRIES=0`).
+Wall time was ~2 h 25 min on a CPU-only laptop (Intel Iris Xe iGPU,
+16 GB RAM). The raw output is committed at
+[`reports/eval_aya8b.csv`](reports/eval_aya8b.csv).
+
+| Metric | Value | Read |
+|---|---|---|
+| `category_correct` | **0.867** (13/15) | Classifier solid, two edge cases below |
+| `recall_at_k` | **0.20** | Top-3 retrieval misses most expected `§` references |
+| `citation_accuracy` | **0.80** | Cited `§`s are largely real — hallucinated citations are the exception |
+| `terms_coverage` | **0.57** | Keyword overlap is mid; LLM-judge sees more semantic match |
+| `judge_groundedness` | **4.07 / 5** | Mostly grounded per the `qwen3:0.6b` judge |
+| `judge_relevance` | **3.50 / 5** | Answers address the question but drift |
+| `judge_completeness` | **4.14 / 5** | Coverage of the expected aspects is fine |
+| mean `latency_s` | **544 s ≈ 9 min** | Dominated by `answer_generator` on CPU |
+
+**What works (architecture):** every one of the 15 questions ran end-to-end
+without exceptions across the 2.5 h. Citations stay anchored to real
+chunks (`citation_accuracy=0.80`), the off-topic refusal mechanism
+fires (q04 returned the polite refusal template in 5 s), and the LLM
+judge scores the in-scope answers above 4/5 on groundedness and
+completeness. The graph, state, tool routing, judge, and metrics
+pipeline are all production-shaped.
+
+**What struggles (model and retrieval):**
+
+* `recall_at_k=0.20` — only q05 (NAHI) and q11 (fejlesztési
+  adókedvezmény) hit the expected `§` in the top-3 retrieved chunks.
+  General-vocabulary queries like *"Mennyi a társasági adó mértéke?"*
+  do not surface `19. §`.
+* Content-level mistakes from the 8B model on CPU: q01 invents a
+  *330 E Ft × 9% ≈ 30 E Ft* example, q02 writes *42 százalék* instead
+  of 50, q06 writes *7,5 százalék* instead of 80, q08 hallucinates a
+  10 MFt threshold. The answers are recognisably Hungarian but the
+  legal phrasing is wobbly ("egyedik élményeket és kötelendeket").
+* q04 (jövedelem-minimum) was wrongly classified `off_topic` because
+  none of my hard-coded TAO keywords are present in the query —
+  the keyword safety net only catches obvious matches.
+* q15 (brassói aprópecsenye, off-topic) was wrongly classified `tao`.
+  The classifier prompt is too forgiving for clearly out-of-scope
+  Hungarian text.
+
+**Bottlenecks:**
+
+1. **Retrieval recall.** Top-3 with a single dense embedding leaves
+   most expected sections behind. This is the dominant quality
+   bottleneck.
+2. **Generation latency.** `answer_generator` on `aya-expanse:8b`
+   takes ~4 min per call on CPU, and the pipeline issues 5–7 LLM
+   calls per question. End-to-end stays in the multi-minute range
+   no matter what the other nodes do.
+3. **Classifier coverage.** The keyword-override safety net works
+   one direction (off_topic → tao) but only on literal matches, so
+   the edge cases above slip through.
+
+**Concrete optimisations (in roughly the order I would try them):**
+
+* Raise `RAG_TOP_K` from 3 to 6–8 and tighten the grader prompt — I
+  expect this to lift `recall_at_k` past 0.5 at ~20 % more latency.
+* Add a hybrid retrieval step (BM25 over `§` numbers and section
+  titles, merged with dense) — section-pointed queries should hit
+  recall ~1.0.
+* Move to GPU or a hosted provider for the main model. The
+  architecture is provider-agnostic (see `app/llm/provider.py`); a
+  swap drops per-question latency from minutes to seconds and lifts
+  answer fluency considerably.
+* Stream tokens from `answer_generator` to the UI — total latency
+  unchanged, perceived UX much better.
+* Replace the keyword classifier with an embedding-similarity check
+  against a few seed TAO sentences — should remove both q04 and q15
+  failures.
+
 ---
 
 ## 9. Load test
@@ -310,6 +414,59 @@ The chart makes it easy to spot the dominant nodes (typically
 `answer_generator` and `retrieve_documents`) and any long-tail
 behaviour under concurrency.
 
+### 9.1 Sample run (dummy provider, N=100)
+
+I ran the load test under `LLM_PROVIDER=dummy` against a separate
+Chroma collection populated with the dummy embedder, so the per-node
+timings reflect pure architecture cost — graph dispatch,
+deterministic node bodies, and Chroma similarity search — with the
+LLM cost zeroed out. Raw outputs are committed at
+[`reports/load_test_dummy_n100_per_query.csv`](reports/load_test_dummy_n100_per_query.csv),
+[`reports/load_test_dummy_n100_per_node.csv`](reports/load_test_dummy_n100_per_node.csv),
+and [`reports/load_test_dummy_n100_per_node.png`](reports/load_test_dummy_n100_per_node.png).
+
+End-to-end (100 queries, concurrency 5, ~5 s wall time):
+
+| | p50 | p95 | p99 | max |
+|---|---|---|---|---|
+| latency (s) | 0.057 | 0.286 | 0.920 | 0.929 |
+
+Per-node (only `retrieve_documents` registers under the dummy):
+
+| node | calls | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| classify_query | 100 | 0.000 | 0.000 | 0.002 | 0.002 |
+| query_decomposer | 84 | 0.000 | 0.000 | 0.000 | 0.000 |
+| retrieve_documents | 84 | **0.022** | **0.889** | **0.890** | 0.905 |
+| tool_executor | 79 | 0.000 | 0.027 | 0.032 | 0.034 |
+| answer_generator | 79 | 0.000 | 0.000 | 0.000 | 0.0001 |
+| hallucination_checker | 79 | 0.000 | 0.000 | 0.000 | 0.000 |
+| off_topic_handler | 16 | 0.000 | 0.000 | 0.000 | 0.000 |
+
+**Read.** With the LLM cost stripped out, `retrieve_documents` is the
+only node that takes measurable time, and its p95 (~0.9 s) is what
+drives the end-to-end p99 (~0.92 s). Everything else — classifier,
+decomposer, tool executor, judge — is at most milliseconds. The graph
+wiring is not the bottleneck; the dense vector search is.
+
+**What this changes about §8.1.** The Ollama numbers in §8.1 showed
+~9 min per question. The dummy load test bounds the contribution from
+the non-LLM parts of the pipeline at ~1 s end-to-end at p99. The rest
+— so the entire 8 min 59 s gap — comes from LLM inference inside
+`answer_generator`, `query_decomposer`, the grader, and the judge.
+This is why every optimisation in §8.1 that doesn't touch the LLM
+(top-K bump, hybrid retrieval, streaming UI) buys at most seconds,
+while any change that *does* touch the LLM (GPU, hosted provider) is
+worth minutes per question.
+
+**Caveat about the dummy.** 5 of the 100 queries failed because the
+dummy provider exercises a slightly different code path in the
+Chroma client during shutdown (`'RustBindingsAPI' object has no
+attribute 'bindings'` etc.); the surviving 95 are enough to read the
+per-node distribution. The 16 off-topic queries skip retrieval, so
+that node only has 84 samples instead of 100. Neither caveat affects
+the headline conclusion.
+
 ---
 
 ## 10. Testing & CI
@@ -318,11 +475,15 @@ behaviour under concurrency.
 uv run pytest -q
 ```
 
-The suite (44 tests) covers:
+The suite (60 tests) covers:
 
 * Configuration & provider factory (`test_config.py`, `test_llm_provider.py`)
 * RAG splitter, ingestion idempotency, retriever round-trip, subgraph
   (`test_rag.py`)
+* BM25 keyword index — build, search, source filter, persist/load,
+  cache invalidation (`test_bm25.py`)
+* Source-hint classification + retrieval-mode dispatch (dense / bm25 /
+  hybrid) + Reciprocal Rank Fusion (`test_source_filter.py`)
 * Tools — calculator rate / loss cap, validator parsing & lookup
   (`test_tools.py`)
 * Agent graph — classifier, off-topic short-circuit, tool firing,
@@ -356,7 +517,7 @@ suite is fast (< 5 s) and deterministic for CI.
   same model for both roles.
 * **Dummy provider in CI.** Every LLM-backed node has a deterministic
   fallback when `LLM_PROVIDER=dummy`, so the full graph runs offline.
-  This is what lets the 44-test suite finish in seconds.
+  This is what lets the 60-test suite finish in seconds.
 * **Tools as one-module-per-file subpackage.** Keeps the boundary
   between deterministic and LLM-driven logic visible and makes it
   easy to bind them to `chat.bind_tools` later if we want to mix in
@@ -364,6 +525,33 @@ suite is fast (< 5 s) and deterministic for CI.
 * **Versioned PDFs in the repo.** ~2 MB total. Trades a bit of repo
   bloat for full reproducibility: anyone can clone and run the
   pipeline with no manual download.
+* **Dense + BM25 + source filter, all opt-in.** The retrieval layer
+  supports three modes via `RAG_RETRIEVAL_MODE`:
+  * `dense` (default, backward-compatible) — pure Chroma similarity
+    search over `bge-m3` embeddings. This is what the §8.1 numbers
+    were measured with.
+  * `bm25` — pure keyword search via `rank_bm25` over a pickled
+    `BM25Okapi` index built at ingestion time
+    (`data/chroma/bm25.pkl`). Useful when the query is dominated by
+    rare legal tokens (paragraph numbers, proper nouns) where the
+    embedding may not place the right chunk near the query in vector
+    space.
+  * `hybrid` — runs both, then combines the rankings with Reciprocal
+    Rank Fusion (`score = Σ 1 / (k + rank)`, default `k=60`). Pulls a
+    wider pool (`2·top_k`) from each side before fusing so RRF has
+    room to promote chunks one side under-ranked.
+
+  On top of that, the classifier now emits a coarse `source_hint`
+  (`nonprofit` / `calculation` / `offering` / `credit` / `general`)
+  which the retrieve node applies as a Chroma `where={"source":
+  {"$in": [...]}}` filter (and as a post-score filter for BM25). This
+  is the cheapest possible "metadata routing" — no extra LLM call, no
+  extra embedding cost — and it keeps off-source chunks out of the
+  context window for narrow questions. Everything degrades gracefully:
+  an unknown hint, a missing BM25 pickle, or a `general` verdict all
+  fall back to the unfiltered dense path. The full eval has **not**
+  been re-run under the new modes (~2.5 h on this box); doing so is
+  the natural next quantitative step.
 
 ---
 

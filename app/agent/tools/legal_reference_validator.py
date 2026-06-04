@@ -60,7 +60,11 @@ def legal_reference_validator(citation: str) -> dict[str, Any]:
         full = store.get()
         all_meta = full.get("metadatas") or []
         all_text = full.get("documents") or []
-        docs_meta = [m for m, t in zip(all_meta, all_text) if section_token in (t or "")]
+        docs_meta = [
+            m
+            for m, t in zip(all_meta, all_text, strict=False)
+            if section_token in (t or "")
+        ]
 
     sources = sorted({(m or {}).get("source", "?") for m in docs_meta})
     return {

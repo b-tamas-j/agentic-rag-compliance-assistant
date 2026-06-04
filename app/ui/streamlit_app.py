@@ -12,14 +12,21 @@ grounded on.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
 import streamlit as st
+from langchain_core.callbacks import BaseCallbackHandler
 
 from app.agent import build_agent_graph
 from app.config import get_settings
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logging.getLogger("app").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
@@ -40,6 +47,19 @@ _NODE_LABELS: dict[str, str] = {
 }
 
 
+class _LLMCallCounter(BaseCallbackHandler):
+    """Count every LLM round-trip so the debug view can attribute calls to nodes."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def on_llm_start(self, *args: Any, **kwargs: Any) -> None:
+        self.count += 1
+
+    def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
+        self.count += 1
+
+
 @st.cache_resource(show_spinner="Agent graph fordítása…")
 def _get_graph():
     """Compile the agent graph once per Streamlit process (with in-memory checkpointer)."""
@@ -51,6 +71,8 @@ def _init_session() -> None:
         st.session_state.messages = []  # list[dict(role, content, meta?)]
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = str(uuid.uuid4())
+    if "debug_mode" not in st.session_state:
+        st.session_state.debug_mode = False
 
 
 def _render_sidebar() -> None:
@@ -66,6 +88,14 @@ def _render_sidebar() -> None:
         st.markdown(f"**Top-K:** {settings.rag_top_k}")
         st.markdown(f"**Max retry:** {settings.max_hallucination_retries}")
         st.divider()
+        st.session_state.debug_mode = st.toggle(
+            "🐞 Debug nézet",
+            value=st.session_state.debug_mode,
+            help=(
+                "Külön 'Debug' fül minden válasz mellé: node-onkénti időmérés, "
+                "LLM hívásszámláló, és a teljes agent state."
+            ),
+        )
         st.caption(f"Session: `{st.session_state.thread_id[:8]}…`")
         if st.button("Új beszélgetés", use_container_width=True):
             st.session_state.messages = []
@@ -132,31 +162,117 @@ def _render_message(msg: dict[str, Any]) -> None:
 
 
 def _process_query(query: str) -> dict[str, Any]:
-    """Stream the graph for one user query, return the final state."""
+    """Stream the graph for one user query, return the final state (+ debug)."""
     graph = _get_graph()
-    config = {"configurable": {"thread_id": st.session_state.thread_id}}
+    debug = st.session_state.debug_mode
+    counter = _LLMCallCounter()
+    config: dict[str, Any] = {
+        "configurable": {"thread_id": st.session_state.thread_id},
+        "callbacks": [counter],
+    }
 
     with st.chat_message("assistant"):
         status = st.status("Agent dolgozik…", expanded=True)
         final_state: dict[str, Any] = {}
-        # graph.stream yields {node_name: update_dict} for each node completion.
+        node_events: list[dict[str, Any]] = []
+        last_t = time.perf_counter()
+        last_count = 0
+        total_start = last_t
         for event in graph.stream({"query": query}, config=config, stream_mode="updates"):
             for node_name, update in event.items():
+                now = time.perf_counter()
+                elapsed = now - last_t
+                llm_calls = counter.count - last_count
+                last_t = now
+                last_count = counter.count
                 label = _NODE_LABELS.get(node_name, node_name)
                 with status:
-                    st.markdown(f"✅ **{label}**")
+                    extra = f" — {elapsed:.1f}s, {llm_calls} LLM hívás" if debug else ""
+                    st.markdown(f"✅ **{label}**{extra}")
+                node_events.append(
+                    {
+                        "node": node_name,
+                        "label": label,
+                        "elapsed_s": round(elapsed, 2),
+                        "llm_calls": llm_calls,
+                        "update": update or {},
+                    }
+                )
                 final_state.update(update or {})
 
+        total_elapsed = time.perf_counter() - total_start
         status.update(label="Kész", state="complete", expanded=False)
 
-        # Render the final answer + tool cards + sources in the same bubble.
         final_answer = final_state.get("final_answer") or final_state.get("draft_answer", "")
-        st.markdown(final_answer)
-        for tool_result in final_state.get("tool_results", []) or []:
-            _render_tool_card(tool_result)
-        _render_sources(final_state.get("retrieved_docs") or [])
+
+        if debug:
+            tab_answer, tab_debug = st.tabs(["Válasz", "Debug"])
+            with tab_answer:
+                st.markdown(final_answer)
+                for tool_result in final_state.get("tool_results", []) or []:
+                    _render_tool_card(tool_result)
+                _render_sources(final_state.get("retrieved_docs") or [])
+            with tab_debug:
+                _render_debug_panel(
+                    final_state, node_events, total_elapsed, counter.count
+                )
+        else:
+            st.markdown(final_answer)
+            for tool_result in final_state.get("tool_results", []) or []:
+                _render_tool_card(tool_result)
+            _render_sources(final_state.get("retrieved_docs") or [])
 
     return final_state
+
+
+def _render_debug_panel(
+    state: dict[str, Any],
+    events: list[dict[str, Any]],
+    total_elapsed: float,
+    total_llm_calls: int,
+) -> None:
+    cols = st.columns(3)
+    cols[0].metric("Teljes ido", f"{total_elapsed:.1f} s")
+    cols[1].metric("LLM hivasok", total_llm_calls)
+    cols[2].metric("Node-ok futtatva", len(events))
+
+    st.markdown("**Node-onkenti bontas:**")
+    st.dataframe(
+        [
+            {
+                "node": e["label"],
+                "ido (s)": e["elapsed_s"],
+                "LLM hivas": e["llm_calls"],
+                "valtoztatott mezok": ", ".join(sorted((e["update"] or {}).keys())) or "(ures)",
+            }
+            for e in events
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Agent state:**")
+    docs = state.get("retrieved_docs") or []
+    summary = {
+        "category": state.get("category"),
+        "sub_queries": state.get("sub_queries"),
+        "retrieved_docs (count)": len(docs),
+        "tool_results": state.get("tool_results"),
+        "draft_answer": (state.get("draft_answer") or "")[:500],
+        "grounded": state.get("grounded"),
+        "hallucination_retries": state.get("hallucination_retries"),
+        "final_answer": (state.get("final_answer") or "")[:500],
+    }
+    st.json(summary, expanded=False)
+
+    if docs:
+        st.markdown("**Retrieved chunks (elso 300 karakter):**")
+        for i, doc in enumerate(docs, 1):
+            meta = getattr(doc, "metadata", {}) or {}
+            with st.expander(
+                f"[{i}] {meta.get('source', '?')} — {meta.get('section') or '?'}"
+            ):
+                st.code(doc.page_content[:300], language="markdown")
 
 
 def main() -> None:
