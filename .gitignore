@@ -55,7 +55,10 @@ data/chroma/
 # Eval / load test artifacts
 eval/results/
 eval/runs/
-reports/
+# Keep reports/ in the repo so committed sample runs (eval CSV, load test
+# CSV + PNG) are available to reviewers without having to re-run the
+# multi-hour pipeline locally. Logs inside reports/ stay ignored.
+reports/*.log
 # Logs
 *.log
 logs/
