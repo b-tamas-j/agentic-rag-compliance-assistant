@@ -1,0 +1,50 @@
+[
+  {
+    "id": "q01",
+    "category": "tao",
+    "question": "Mennyi a társasági adó mértéke Magyarországon?",
+    "expected_sections": ["19. §"],
+    "expected_terms": ["9", "százalék"],
+    "topic": "adómérték"
+  },
+  {
+    "id": "q05",
+    "category": "tao",
+    "question": "Mi a növekedési adóhitel (NAHI) lényege, és milyen feltétellel vehető igénybe?",
+    "expected_sections": ["26/A. §"],
+    "expected_terms": ["növekedési adóhitel", "halasztott"],
+    "topic": "NAHI"
+  },
+  {
+    "id": "q07",
+    "category": "tao",
+    "question": "Milyen célokra lehet TAO-felajánlást tenni a hatályos szabályok szerint?",
+    "expected_sections": ["24/A. §"],
+    "expected_terms": ["látvány-csapatsport", "film"],
+    "topic": "TAO-felajánlás"
+  },
+  {
+    "id": "q08",
+    "category": "tao",
+    "question": "Hogyan adózik egy közhasznú nonprofit gazdasági társaság a társasági adó szempontjából?",
+    "expected_sections": ["13/A. §"],
+    "expected_terms": ["közhasznú", "kedvezményezett"],
+    "topic": "nonprofit"
+  },
+  {
+    "id": "q14",
+    "category": "tao",
+    "question": "Számítsd ki a fizetendő társasági adót 10 000 000 Ft adóalap és 3 000 000 Ft elhatárolt veszteség mellett.",
+    "expected_sections": ["17. §", "19. §"],
+    "expected_terms": ["9", "765"],
+    "topic": "számítás"
+  },
+  {
+    "id": "q15",
+    "category": "off_topic",
+    "question": "Hogyan készítsek brassói aprópecsenyét?",
+    "expected_sections": [],
+    "expected_terms": ["társasági adó"],
+    "topic": "off-topic"
+  }
+]

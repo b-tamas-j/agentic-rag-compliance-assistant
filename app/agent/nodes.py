@@ -59,13 +59,32 @@ SOURCE_HINT_FILES: dict[str, list[str]] = {
 
 
 # Keyword fallback for source classification (lowercase, Hungarian).
+# The lists are intentionally conservative: each keyword maps unambiguously
+# to ONE of the four bundled PDFs. Cross-cutting concepts (e.g. "osztalék",
+# "adó", general "társasági adó") are deliberately left out so the hint
+# falls back to "general" -> no source filter -> broad recall.
 _SOURCE_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "nonprofit": ("nonprofit", "közhasznú", "alapítvány", "egyesület"),
-    "offering": ("felajánlás", "tao-felajánlás", "kedvezményezett célok"),
-    "credit": ("növekedési adóhitel", "nahi", "adóhitel"),
+    "nonprofit": (
+        "nonprofit", "közhasznú", "alapítvány", "egyesület",
+        "civil szervezet", "egyházi", "köztestület",
+    ),
+    "offering": (
+        "felajánlás", "tao-felajánlás", "kedvezményezett célok",
+        "látvány-csapatsport", "filmalkotás", "előadó-művészeti",
+    ),
+    "credit": (
+        "növekedési adóhitel", "nahi", "adóhitel",
+        "halasztott adófizetés",
+    ),
     "calculation": (
+        # Core mechanics that uniquely live in the "general rules" PDF.
         "adóalap", "adómérték", "elhatárolt veszteség",
-        "adókedvezmény", "számítás", "kiszámít",
+        "veszteségelhatárolás", "adókedvezmény",
+        "jövedelem-minimum", "nyereség-minimum",
+        "transzferár", "szokásos piaci ár",
+        "fejlesztési adókedvezmény", "adóelőleg",
+        "bevallás", "naptári év", "adóév",
+        "számítás", "kiszámít",
     ),
 }
 
@@ -299,14 +318,20 @@ def tool_executor_node(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 _ANSWER_PROMPT = (
     "Te egy magyar társasági adó szakértő vagy. Válaszolj az alábbi kérdésre "
-    "kizárólag a megadott források alapján. Hivatkozz a paragrafusokra (pl. "
-    "'Tao. tv. 19. §'), ahol releváns. Ha a források nem fedik le a kérdést, "
-    "ezt írd le őszintén.\n\n"
-    "Válaszolj TÖMÖREN, legfeljebb 4-5 mondatban. Ne ismételd a kérdést, és "
-    "ne sorolj fel mindent listában — csak a lényeget add vissza.\n\n"
+    "kizárólag a megadott források alapján. Ha a források nem fedik le a "
+    "kérdést, ezt írd le őszintén.\n\n"
+    "HIVATKOZÁSI SZABÁLYOK:\n"
+    "- Hivatkozz a paragrafusokra a 'Tao. tv. N. §' formátumban (pl. "
+    "'Tao. tv. 19. §' vagy 'Tao. tv. 24/A. §').\n"
+    "- SOHA ne tedd be a forrás PDF fájl nevét a hivatkozásba. A fájlnév "
+    "csak metaadat, nem hivatkozási elem.\n"
+    "- Ha egy eszköz (pl. tao_calculator) számszerű eredményt adott, akkor "
+    "azt használd a válaszban — ne számolj újra fejből.\n\n"
+    "Válaszolj TÖMÖREN, legfeljebb 4-5 mondatban. Ne ismételd a kérdést, "
+    "és ne sorolj fel mindent listában — csak a lényeget add vissza.\n\n"
     "Kérdés: {query}\n\n"
     "Források:\n{context}\n\n"
-    "Eszközök eredménye (ha van): {tools}\n\n"
+    "Eszközök eredménye:\n{tools}\n\n"
     "Válasz magyarul:"
 )
 
@@ -316,9 +341,43 @@ def _format_context(docs: list[Document]) -> str:
         return "(nincs releváns forrás)"
     lines = []
     for i, doc in enumerate(docs, 1):
+        # The section header is the citation-worthy field; the source
+        # filename is shown as opaque metadata so the LLM is less likely
+        # to splice it into a citation. The prompt above also forbids it
+        # explicitly.
+        section = doc.metadata.get("section") or "(nincs §)"
         src = doc.metadata.get("source", "?")
-        section = doc.metadata.get("section") or "?"
-        lines.append(f"[{i}] ({src}, {section}) {doc.page_content[:400]}")
+        lines.append(
+            f"[{i}] Paragrafus: {section}  | (meta: forrás={src})\n"
+            f"    {doc.page_content[:400]}"
+        )
+    return "\n".join(lines)
+
+
+def _format_tools(tools: list[dict]) -> str:
+    """Render tool results as a short, readable bulleted text block.
+
+    Raw ``repr(list[dict])`` is hostile to small chat models, which then
+    silently ignore the tool output and re-derive the result themselves
+    (often wrongly). A plain Hungarian summary fixes that.
+    """
+    if not tools:
+        return "(nem futott eszköz)"
+    lines: list[str] = []
+    for t in tools:
+        name = t.get("tool", "?")
+        if "error" in t:
+            lines.append(f"- {name}: HIBA ({t['error']})")
+            continue
+        out = t.get("output", {})
+        if isinstance(out, dict):
+            # Prefer the human-readable 'explanation' field if present.
+            text = out.get("explanation") or "; ".join(
+                f"{k}={v}" for k, v in out.items() if k != "explanation"
+            )
+        else:
+            text = str(out)
+        lines.append(f"- {name}: {text}")
     return "\n".join(lines)
 
 
@@ -345,7 +404,7 @@ def answer_generator_node(state: AgentState) -> dict[str, Any]:
     prompt = _ANSWER_PROMPT.format(
         query=query,
         context=_format_context(docs),
-        tools=tools or "(nincs)",
+        tools=_format_tools(tools),
     )
     response = chat.invoke([HumanMessage(content=prompt)])
     return {"draft_answer": strip_think_tags(response.content or "")}
