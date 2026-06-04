@@ -21,7 +21,6 @@ from pathlib import Path
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 
-
 # A loose tokenizer: lowercase + Unicode-NFKC + split on anything that is
 # not a letter, digit, or paragraph marker. Keeps Hungarian accents intact
 # (they carry meaning in this corpus) and treats "19.§" / "19. §" alike.

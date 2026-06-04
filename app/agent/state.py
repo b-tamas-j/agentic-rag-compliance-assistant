@@ -11,7 +11,6 @@ from typing import Literal, TypedDict
 
 from langchain_core.documents import Document
 
-
 QueryCategory = Literal["tao", "off_topic"]
 
 # Coarse topical hint used to narrow Chroma/BM25 retrieval to one or two

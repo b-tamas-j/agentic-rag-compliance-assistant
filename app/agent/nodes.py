@@ -15,15 +15,21 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
+from app.agent.prompts import (
+    ANSWER_PROMPT,
+    CLASSIFY_PROMPT,
+    DECOMPOSE_PROMPT,
+    GROUNDEDNESS_PROMPT,
+)
 from app.agent.state import AgentState
 from app.agent.tools import legal_reference_validator, tao_calculator
-
-logger = logging.getLogger(__name__)
 from app.config import get_settings
 from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
 from app.llm.text import looks_repetitive, strip_think_tags
 from app.rag.subgraph import build_rag_subgraph
+
+logger = logging.getLogger(__name__)
 
 # Cached compiled RAG subgraph (built lazily on first call).
 _rag_subgraph = None
@@ -128,20 +134,6 @@ class GroundednessVerdict(BaseModel):
 # ---------------------------------------------------------------------------
 # 1. classify_query
 # ---------------------------------------------------------------------------
-_CLASSIFY_PROMPT = (
-    "Te egy magyar adójogi asszisztens vagy. Döntsd el, hogy az alábbi "
-    "kérdés a TÁRSASÁGI ADÓ (Tao. tv.) témakörébe tartozik-e, és ha igen, "
-    "melyik forrás a leginkább releváns.\n\n"
-    "Kérdés: {query}\n\n"
-    "Válaszolj a megadott szerkezetben:\n"
-    "  - category: 'tao' vagy 'off_topic'\n"
-    "  - source_hint: 'nonprofit' (közhasznú/alapítvány/egyesület), "
-    "'calculation' (általános TAO, adóalap, adómérték, elhatárolt "
-    "veszteség, adókedvezmény), 'offering' (Tao-felajánlás), "
-    "'credit' (növekedési adóhitel/NAHI), vagy 'general' ha nem egyértelmű."
-)
-
-
 _VALID_SOURCE_HINTS = {"nonprofit", "calculation", "offering", "credit", "general"}
 
 
@@ -165,7 +157,7 @@ def classify_query_node(state: AgentState) -> dict[str, Any]:
     hint = "general"
     try:
         verdict: ClassificationVerdict = classifier.invoke(  # type: ignore[assignment]
-            _CLASSIFY_PROMPT.format(query=state["query"])
+            CLASSIFY_PROMPT.format(query=state["query"])
         )
         category = "tao" if verdict.category.lower().strip() == "tao" else "off_topic"
         raw_hint = (verdict.source_hint or "general").lower().strip()
@@ -195,14 +187,6 @@ def classify_query_node(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # 2. query_decomposer
 # ---------------------------------------------------------------------------
-_DECOMPOSE_PROMPT = (
-    "Bontsd az alábbi magyar adójogi kérdést 1-3 önállóan kereshető, "
-    "rövid alkérdésre. Minden alkérdés külön sorba kerüljön, számozás nélkül. "
-    "Ha a kérdés már önmagában elég egyszerű, add vissza egyetlen sorként.\n\n"
-    "Kérdés: {query}"
-)
-
-
 def query_decomposer_node(state: AgentState) -> dict[str, Any]:
     """Split a complex query into 1-3 retrievable sub-questions."""
     logger.debug("query_decomposer_node: query=%r", state.get("query"))
@@ -215,7 +199,7 @@ def query_decomposer_node(state: AgentState) -> dict[str, Any]:
         return {"sub_queries": [query]}
 
     try:
-        response = chat.invoke([HumanMessage(content=_DECOMPOSE_PROMPT.format(query=query))])
+        response = chat.invoke([HumanMessage(content=DECOMPOSE_PROMPT.format(query=query))])
         cleaned = strip_think_tags(response.content or "")
         lines = [ln.strip(" -•\t") for ln in cleaned.splitlines() if ln.strip()]
         # Drop sub-queries that are obvious small-model degeneration loops
@@ -316,26 +300,6 @@ def tool_executor_node(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # 5. answer_generator
 # ---------------------------------------------------------------------------
-_ANSWER_PROMPT = (
-    "Te egy magyar társasági adó szakértő vagy. Válaszolj az alábbi kérdésre "
-    "kizárólag a megadott források alapján. Ha a források nem fedik le a "
-    "kérdést, ezt írd le őszintén.\n\n"
-    "HIVATKOZÁSI SZABÁLYOK:\n"
-    "- Hivatkozz a paragrafusokra a 'Tao. tv. N. §' formátumban (pl. "
-    "'Tao. tv. 19. §' vagy 'Tao. tv. 24/A. §').\n"
-    "- SOHA ne tedd be a forrás PDF fájl nevét a hivatkozásba. A fájlnév "
-    "csak metaadat, nem hivatkozási elem.\n"
-    "- Ha egy eszköz (pl. tao_calculator) számszerű eredményt adott, akkor "
-    "azt használd a válaszban — ne számolj újra fejből.\n\n"
-    "Válaszolj TÖMÖREN, legfeljebb 4-5 mondatban. Ne ismételd a kérdést, "
-    "és ne sorolj fel mindent listában — csak a lényeget add vissza.\n\n"
-    "Kérdés: {query}\n\n"
-    "Források:\n{context}\n\n"
-    "Eszközök eredménye:\n{tools}\n\n"
-    "Válasz magyarul:"
-)
-
-
 def _format_context(docs: list[Document]) -> str:
     if not docs:
         return "(nincs releváns forrás)"
@@ -401,7 +365,7 @@ def answer_generator_node(state: AgentState) -> dict[str, Any]:
         draft = f"[dummy] Forrás: {first} | Eszközök: {tool_text}".strip()
         return {"draft_answer": draft}
 
-    prompt = _ANSWER_PROMPT.format(
+    prompt = ANSWER_PROMPT.format(
         query=query,
         context=_format_context(docs),
         tools=_format_tools(tools),
@@ -413,16 +377,6 @@ def answer_generator_node(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # 6. hallucination_checker
 # ---------------------------------------------------------------------------
-_GROUNDEDNESS_PROMPT = (
-    "Ellenőrizd, hogy az alábbi VÁLASZ minden ténymegállapítása alá van-e "
-    "támasztva a megadott FORRÁSOK-kal. Ha bármi nem szerepel a forrásokban, "
-    "akkor 'grounded=false'. Ha minden állítás visszavezethető a forrásokra, "
-    "akkor 'grounded=true'. Csak a logikai ítéletet add vissza, indoklás nélkül.\n\n"
-    "FORRÁSOK:\n{context}\n\n"
-    "VÁLASZ:\n{answer}"
-)
-
-
 def hallucination_checker_node(state: AgentState) -> dict[str, Any]:
     """Judge whether the draft answer is grounded in the retrieved sources."""
     draft = state.get("draft_answer", "")
@@ -443,7 +397,7 @@ def hallucination_checker_node(state: AgentState) -> dict[str, Any]:
     judge = chat.with_structured_output(GroundednessVerdict)
     try:
         verdict: GroundednessVerdict = judge.invoke(  # type: ignore[assignment]
-            _GROUNDEDNESS_PROMPT.format(context=_format_context(docs), answer=draft)
+            GROUNDEDNESS_PROMPT.format(context=_format_context(docs), answer=draft)
         )
         grounded = bool(verdict.grounded)
         logger.debug("hallucination_checker_node: grounded=%s", grounded)

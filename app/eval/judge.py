@@ -11,9 +11,9 @@ import logging
 from typing import Any
 
 from langchain_core.documents import Document
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
+from app.eval.prompts import JUDGE_PROMPT
 from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
 
@@ -27,18 +27,6 @@ class JudgeVerdict(BaseModel):
     relevance: int = Field(ge=1, le=5, description="How directly the answer addresses the question.")
     completeness: int = Field(ge=1, le=5, description="Whether the answer covers the expected aspects.")
     comment: str = Field(default="", description="Short Hungarian justification.")
-
-
-_JUDGE_PROMPT = (
-    "Bíró vagy egy magyar társasági adó (TAO) tanácsadó asszisztens kiértékelésében.\n"
-    "Pontozd az alábbi VÁLASZ minőségét három szempont szerint 1-5 skálán.\n\n"
-    "KÉRDÉS:\n{question}\n\n"
-    "FORRÁSOK (RAG):\n{context}\n\n"
-    "VÁLASZ:\n{answer}\n\n"
-    "Adj integer pontszámot a groundedness (mennyire támasztják alá a források), "
-    "relevance (mennyire válaszol a kérdésre) és completeness (mennyire lefedő) "
-    "mezőkre, és írj rövid magyar megjegyzést."
-)
 
 
 def _format_context(docs: list[Document]) -> str:
@@ -79,7 +67,7 @@ def judge_answer(
         judge = chat.with_structured_output(JudgeVerdict)
         try:
             verdict = judge.invoke(  # type: ignore[assignment]
-                _JUDGE_PROMPT.format(
+                JUDGE_PROMPT.format(
                     question=question,
                     context=_format_context(retrieved_docs),
                     answer=answer,

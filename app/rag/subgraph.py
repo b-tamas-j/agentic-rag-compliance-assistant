@@ -30,6 +30,7 @@ from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
 from app.llm.text import looks_repetitive, strip_think_tags
 from app.rag.bm25 import get_bm25_index
+from app.rag.prompts import GRADE_PROMPT, QUERY_TRANSFORM_PROMPT
 from app.rag.retriever import get_retriever
 
 
@@ -64,27 +65,6 @@ class BatchRelevanceVerdict(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Prompts (kept short and Hungarian-first for the target domain)
-# ---------------------------------------------------------------------------
-_QUERY_TRANSFORM_PROMPT = (
-    "Fogalmazd át az alábbi kérdést jogszabály-keresésre optimalizált, "
-    "tömör formára magyarul. Tartsd meg a szakkifejezéseket (pl. ÁFA, TAO, "
-    "fordított adózás), de hagyd el a kérdőszavakat és a felesleges szavakat. "
-    "Csak az átfogalmazott kérdést add vissza, semmi mást.\n\n"
-    "Kérdés: {query}"
-)
-
-_GRADE_PROMPT = (
-    "Te egy magyar számviteli/adójogi szakértő vagy. Az alábbi forrás"
-    "részletek közül döntsd el, melyek RELEVÁNSAK a kérdés megválaszolásához. "
-    "Add vissza a releváns részletek 1-alapú sorszámát a megadott "
-    "szerkezetben. Ha egyik sem releváns, üres listát adj vissza.\n\n"
-    "Kérdés: {query}\n\n"
-    "Forrásrészletek:\n{chunks}"
-)
-
-
-# ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
 def _query_transform_node(state: RAGState) -> RAGState:
@@ -95,7 +75,7 @@ def _query_transform_node(state: RAGState) -> RAGState:
     if isinstance(chat, DummyChatModel):
         # Skip LLM rewriting under the dummy provider for determinism.
         return {"rewritten_query": query}
-    response = chat.invoke([HumanMessage(content=_QUERY_TRANSFORM_PROMPT.format(query=query))])
+    response = chat.invoke([HumanMessage(content=QUERY_TRANSFORM_PROMPT.format(query=query))])
     rewritten = strip_think_tags(response.content or "") or query
     # If the small model degenerated into a repetition loop, fall back to
     # the original query rather than feeding garbage into the retriever.
@@ -195,7 +175,7 @@ def _grade_documents_node(state: RAGState) -> RAGState:
         return {"relevant_docs": docs}
 
     grader = chat.with_structured_output(BatchRelevanceVerdict)
-    prompt = _GRADE_PROMPT.format(
+    prompt = GRADE_PROMPT.format(
         query=query, chunks=_format_chunks_for_grading(docs)
     )
     try:
