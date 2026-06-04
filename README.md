@@ -386,6 +386,50 @@ pipeline are all production-shaped.
   against a few seed TAO sentences — should remove both q04 and q15
   failures.
 
+#### Follow-up: hybrid + source-filter smoke test
+
+After the headline run I implemented two of the bullets above (hybrid
+BM25 + dense retrieval with RRF, and a classifier-driven `source_hint`
+Chroma metadata filter — see §11) plus a prompt rewrite that keeps the
+output Hungarian but moves the instructions to English. The 6-question
+smoke set
+[`reports/eval_aya8b_hybrid_smoke.csv`](reports/eval_aya8b_hybrid_smoke.csv)
+re-runs q01, q05, q07, q08, q14, q15 under this new pipeline.
+
+Read with care — N = 6 is far too small to draw headline conclusions —
+but the **direction** is informative:
+
+| Metric | Dense baseline (15 Q) | Hybrid smoke (6 Q) | Read |
+|---|---|---|---|
+| `category_correct` | 0.867 | 1.000 | classifier still solid on this subset |
+| `recall_at_k` | 0.20 | 0.167 | in-scope recall still essentially zero — hybrid alone is not enough |
+| `citation_accuracy` | 0.833 | 0.833 | citation rules in the prompt held |
+| `grounded` | 1.000 | 1.000 | hallucination check still passes everything |
+| `judge_relevance` (avg) | 3.6 | **4.2** | prompt rewrite is the most likely cause |
+| `judge_completeness` (avg) | 3.6 | **4.2** | same |
+| mean `latency_s` | 544 | 465 | smaller subset, but no regression |
+
+The qualitative failures are still consistent with the §8.1 bottleneck
+analysis:
+
+* **q14 (TAO calculation, expected 765 000 Ft):** the `tao_calculator`
+  tool did not fire, so the model produced a plausible-looking but
+  wrong number. The bottleneck here is the small fast model's
+  tool-trigger heuristic, not retrieval.
+* **q05 (NAHI):** sub-questions about the unrelated *elhatárolt
+  veszteség* topic still leak through, suggesting the decomposer needs
+  to be aware of `source_hint` too, not just the classifier.
+* **q01 / q07 / q08:** the model picks defensible neighbouring `§`
+  citations rather than the labelled gold ones — same recall problem
+  as in the baseline. Hybrid retrieval is necessary but not sufficient
+  on the current corpus; the dominant remaining lever is **moving the
+  main model off CPU**, exactly as flagged above.
+
+So this follow-up does not contradict the baseline analysis — it
+**confirms** which optimisations actually move the needle (prompt
+quality, tool-trigger heuristics) versus which are blocked by the CPU
+generation bottleneck (recall-driven answer correctness).
+
 ---
 
 ## 9. Load test
