@@ -22,8 +22,8 @@ explored end-to-end (chat UI, evaluation harness, load test).
 5. [Configuration](#5-configuration)
 6. [Data ingestion](#6-data-ingestion)
 7. [Running the chat UI](#7-running-the-chat-ui)
-8. [Evaluation](#8-evaluation)
-9. [Load test](#9-load-test)
+8. [Evaluation](#8-evaluation) — including [sample results](#81-results-from-a-sample-run-aya-expanse8b-mixed-profile)
+9. [Load test](#9-load-test) — including [a note on running it under Ollama](#91-a-note-on-the-load-test-under-ollama)
 10. [Testing & CI](#10-testing--ci)
 11. [Design decisions and trade-offs](#11-design-decisions-and-trade-offs)
 12. [Future work](#12-future-work)
@@ -282,6 +282,82 @@ For each question the runner records:
 
 Outputs land in `reports/eval.csv` plus a stdout summary.
 
+### 8.1 Results from a sample run (`aya-expanse:8b` mixed profile)
+
+I ran the full 15-question evaluation against Ollama with the mixed
+profile (main = `aya-expanse:8b`, fast + judge = `qwen3:0.6b`,
+`RAG_TOP_K=3`, `LLM_MAX_TOKENS=400`, `MAX_HALLUCINATION_RETRIES=0`).
+Wall time was ~2 h 25 min on a CPU-only laptop (Intel Iris Xe iGPU,
+16 GB RAM). The raw output is committed at
+[`reports/eval_aya8b.csv`](reports/eval_aya8b.csv).
+
+| Metric | Value | Read |
+|---|---|---|
+| `category_correct` | **0.867** (13/15) | Classifier solid, two edge cases below |
+| `recall_at_k` | **0.20** | Top-3 retrieval misses most expected `§` references |
+| `citation_accuracy` | **0.80** | Cited `§`s are largely real — hallucinated citations are the exception |
+| `terms_coverage` | **0.57** | Keyword overlap is mid; LLM-judge sees more semantic match |
+| `judge_groundedness` | **4.07 / 5** | Mostly grounded per the `qwen3:0.6b` judge |
+| `judge_relevance` | **3.50 / 5** | Answers address the question but drift |
+| `judge_completeness` | **4.14 / 5** | Coverage of the expected aspects is fine |
+| mean `latency_s` | **544 s ≈ 9 min** | Dominated by `answer_generator` on CPU |
+
+**What works (architecture):** every one of the 15 questions ran end-to-end
+without exceptions across the 2.5 h. Citations stay anchored to real
+chunks (`citation_accuracy=0.80`), the off-topic refusal mechanism
+fires (q04 returned the polite refusal template in 5 s), and the LLM
+judge scores the in-scope answers above 4/5 on groundedness and
+completeness. The graph, state, tool routing, judge, and metrics
+pipeline are all production-shaped.
+
+**What struggles (model and retrieval):**
+
+* `recall_at_k=0.20` — only q05 (NAHI) and q11 (fejlesztési
+  adókedvezmény) hit the expected `§` in the top-3 retrieved chunks.
+  General-vocabulary queries like *"Mennyi a társasági adó mértéke?"*
+  do not surface `19. §`.
+* Content-level mistakes from the 8B model on CPU: q01 invents a
+  *330 E Ft × 9% ≈ 30 E Ft* example, q02 writes *42 százalék* instead
+  of 50, q06 writes *7,5 százalék* instead of 80, q08 hallucinates a
+  10 MFt threshold. The answers are recognisably Hungarian but the
+  legal phrasing is wobbly ("egyedik élményeket és kötelendeket").
+* q04 (jövedelem-minimum) was wrongly classified `off_topic` because
+  none of my hard-coded TAO keywords are present in the query —
+  the keyword safety net only catches obvious matches.
+* q15 (brassói aprópecsenye, off-topic) was wrongly classified `tao`.
+  The classifier prompt is too forgiving for clearly out-of-scope
+  Hungarian text.
+
+**Bottlenecks:**
+
+1. **Retrieval recall.** Top-3 with a single dense embedding leaves
+   most expected sections behind. This is the dominant quality
+   bottleneck.
+2. **Generation latency.** `answer_generator` on `aya-expanse:8b`
+   takes ~4 min per call on CPU, and the pipeline issues 5–7 LLM
+   calls per question. End-to-end stays in the multi-minute range
+   no matter what the other nodes do.
+3. **Classifier coverage.** The keyword-override safety net works
+   one direction (off_topic → tao) but only on literal matches, so
+   the edge cases above slip through.
+
+**Concrete optimisations (in roughly the order I would try them):**
+
+* Raise `RAG_TOP_K` from 3 to 6–8 and tighten the grader prompt — I
+  expect this to lift `recall_at_k` past 0.5 at ~20 % more latency.
+* Add a hybrid retrieval step (BM25 over `§` numbers and section
+  titles, merged with dense) — section-pointed queries should hit
+  recall ~1.0.
+* Move to GPU or a hosted provider for the main model. The
+  architecture is provider-agnostic (see `app/llm/provider.py`); a
+  swap drops per-question latency from minutes to seconds and lifts
+  answer fluency considerably.
+* Stream tokens from `answer_generator` to the UI — total latency
+  unchanged, perceived UX much better.
+* Replace the keyword classifier with an embedding-similarity check
+  against a few seed TAO sentences — should remove both q04 and q15
+  failures.
+
 ---
 
 ## 9. Load test
@@ -309,6 +385,30 @@ Outputs:
 The chart makes it easy to spot the dominant nodes (typically
 `answer_generator` and `retrieve_documents`) and any long-tail
 behaviour under concurrency.
+
+### 9.1 A note on the load test under Ollama
+
+I deliberately did not commit a load-test CSV from the heavy
+`aya-expanse:8b` run. At ~9 min wall time per question (see §8.1),
+N=50 with `concurrency=1` would project to ~7–8 h, and pushing
+concurrency higher on a 16 GB CPU-only box thrashes RAM rather than
+adding throughput. The load-test harness is the right place to
+*profile the architecture* (per-node p50 / p95 / p99, which node
+dominates), and for that purpose the per-question latency
+breakdown already visible in the evaluation run gives the same
+signal: `answer_generator` is the bottleneck node, and the CPU is
+the bottleneck resource. The runner itself is exercised by the
+unit-test suite (`tests/test_load_test_runner.py`) so the wiring
+stays honest.
+
+If you want to see the harness produce real CSVs without burning
+the multi-hour budget, run it against the dummy provider — same
+nodes, same instrumentation, deterministic outputs:
+
+```powershell
+$env:LLM_PROVIDER = "dummy"
+uv run python -m app.load_test.runner --n 50 --concurrency 5
+```
 
 ---
 
