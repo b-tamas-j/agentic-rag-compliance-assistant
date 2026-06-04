@@ -48,6 +48,7 @@ htmlcov/
 # Persisted vector store
 chroma_db/
 data/chroma/
+data/chroma_dummy/
 # Source documents (NAV publications) ARE versioned in this repo - small size,
 # reproducibility outweighs binary bloat for a demo project.
 # Ollama model cache (if mounted locally)

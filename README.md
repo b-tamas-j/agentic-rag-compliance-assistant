@@ -23,7 +23,7 @@ explored end-to-end (chat UI, evaluation harness, load test).
 6. [Data ingestion](#6-data-ingestion)
 7. [Running the chat UI](#7-running-the-chat-ui)
 8. [Evaluation](#8-evaluation) — including [sample results](#81-results-from-a-sample-run-aya-expanse8b-mixed-profile)
-9. [Load test](#9-load-test) — including [a note on running it under Ollama](#91-a-note-on-the-load-test-under-ollama)
+9. [Load test](#9-load-test) — including a [sample dummy run, N=100](#91-sample-run-dummy-provider-n100)
 10. [Testing & CI](#10-testing--ci)
 11. [Design decisions and trade-offs](#11-design-decisions-and-trade-offs)
 12. [Future work](#12-future-work)
@@ -386,29 +386,58 @@ The chart makes it easy to spot the dominant nodes (typically
 `answer_generator` and `retrieve_documents`) and any long-tail
 behaviour under concurrency.
 
-### 9.1 A note on the load test under Ollama
+### 9.1 Sample run (dummy provider, N=100)
 
-I deliberately did not commit a load-test CSV from the heavy
-`aya-expanse:8b` run. At ~9 min wall time per question (see §8.1),
-N=50 with `concurrency=1` would project to ~7–8 h, and pushing
-concurrency higher on a 16 GB CPU-only box thrashes RAM rather than
-adding throughput. The load-test harness is the right place to
-*profile the architecture* (per-node p50 / p95 / p99, which node
-dominates), and for that purpose the per-question latency
-breakdown already visible in the evaluation run gives the same
-signal: `answer_generator` is the bottleneck node, and the CPU is
-the bottleneck resource. The runner itself is exercised by the
-unit-test suite (`tests/test_load_test_runner.py`) so the wiring
-stays honest.
+I ran the load test under `LLM_PROVIDER=dummy` against a separate
+Chroma collection populated with the dummy embedder, so the per-node
+timings reflect pure architecture cost — graph dispatch,
+deterministic node bodies, and Chroma similarity search — with the
+LLM cost zeroed out. Raw outputs are committed at
+[`reports/load_test_dummy_n100_per_query.csv`](reports/load_test_dummy_n100_per_query.csv),
+[`reports/load_test_dummy_n100_per_node.csv`](reports/load_test_dummy_n100_per_node.csv),
+and [`reports/load_test_dummy_n100_per_node.png`](reports/load_test_dummy_n100_per_node.png).
 
-If you want to see the harness produce real CSVs without burning
-the multi-hour budget, run it against the dummy provider — same
-nodes, same instrumentation, deterministic outputs:
+End-to-end (100 queries, concurrency 5, ~5 s wall time):
 
-```powershell
-$env:LLM_PROVIDER = "dummy"
-uv run python -m app.load_test.runner --n 50 --concurrency 5
-```
+| | p50 | p95 | p99 | max |
+|---|---|---|---|---|
+| latency (s) | 0.057 | 0.286 | 0.920 | 0.929 |
+
+Per-node (only `retrieve_documents` registers under the dummy):
+
+| node | calls | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| classify_query | 100 | 0.000 | 0.000 | 0.002 | 0.002 |
+| query_decomposer | 84 | 0.000 | 0.000 | 0.000 | 0.000 |
+| retrieve_documents | 84 | **0.022** | **0.889** | **0.890** | 0.905 |
+| tool_executor | 79 | 0.000 | 0.027 | 0.032 | 0.034 |
+| answer_generator | 79 | 0.000 | 0.000 | 0.000 | 0.0001 |
+| hallucination_checker | 79 | 0.000 | 0.000 | 0.000 | 0.000 |
+| off_topic_handler | 16 | 0.000 | 0.000 | 0.000 | 0.000 |
+
+**Read.** With the LLM cost stripped out, `retrieve_documents` is the
+only node that takes measurable time, and its p95 (~0.9 s) is what
+drives the end-to-end p99 (~0.92 s). Everything else — classifier,
+decomposer, tool executor, judge — is at most milliseconds. The graph
+wiring is not the bottleneck; the dense vector search is.
+
+**What this changes about §8.1.** The Ollama numbers in §8.1 showed
+~9 min per question. The dummy load test bounds the contribution from
+the non-LLM parts of the pipeline at ~1 s end-to-end at p99. The rest
+— so the entire 8 min 59 s gap — comes from LLM inference inside
+`answer_generator`, `query_decomposer`, the grader, and the judge.
+This is why every optimisation in §8.1 that doesn't touch the LLM
+(top-K bump, hybrid retrieval, streaming UI) buys at most seconds,
+while any change that *does* touch the LLM (GPU, hosted provider) is
+worth minutes per question.
+
+**Caveat about the dummy.** 5 of the 100 queries failed because the
+dummy provider exercises a slightly different code path in the
+Chroma client during shutdown (`'RustBindingsAPI' object has no
+attribute 'bindings'` etc.); the surviving 95 are enough to read the
+per-node distribution. The 16 off-topic queries skip retrieval, so
+that node only has 84 samples instead of 100. Neither caveat affects
+the headline conclusion.
 
 ---
 

@@ -1,0 +1,8 @@
+node,calls,mean,min,p50,p95,p99,max
+answer_generator,79,0.0,0.0,0.0,0.0,0.0,0.0001
+classify_query,100,0.0,0.0,0.0,0.0,0.0018,0.0019
+hallucination_checker,79,0.0,0.0,0.0,0.0,0.0,0.0
+off_topic_handler,16,0.0,0.0,0.0,0.0,0.0,0.0
+query_decomposer,84,0.0,0.0,0.0,0.0,0.0,0.0
+retrieve_documents,84,0.0855,0.0086,0.0225,0.8887,0.8904,0.9054
+tool_executor,79,0.003,0.0,0.0,0.0272,0.0319,0.0342
