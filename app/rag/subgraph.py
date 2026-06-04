@@ -29,6 +29,7 @@ from app.config import get_settings
 from app.llm import get_chat_model
 from app.llm.dummy import DummyChatModel
 from app.llm.text import looks_repetitive, strip_think_tags
+from app.rag.bm25 import get_bm25_index
 from app.rag.retriever import get_retriever
 
 
@@ -42,6 +43,9 @@ class RAGState(TypedDict, total=False):
     rewritten_query: str
     retrieved_docs: list[Document]
     relevant_docs: list[Document]
+    # Optional list of source filenames to restrict retrieval to. Threaded
+    # in from the parent agent's ``source_hint`` classification.
+    source_filter: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +104,76 @@ def _query_transform_node(state: RAGState) -> RAGState:
     return {"rewritten_query": rewritten}
 
 
+def _doc_key(doc: Document) -> str:
+    """Stable identity key used to deduplicate across retrieval modes."""
+    md = doc.metadata or {}
+    return f"{md.get('source', '')}::p{md.get('page', '?')}::c{md.get('chunk_id', '?')}"
+
+
+def _reciprocal_rank_fusion(
+    rankings: list[list[Document]],
+    *,
+    k: int,
+    rrf_k: int,
+) -> list[Document]:
+    """Combine multiple rankings into one via Reciprocal Rank Fusion."""
+    scores: dict[str, float] = {}
+    by_key: dict[str, Document] = {}
+    for ranking in rankings:
+        for rank, doc in enumerate(ranking, start=1):
+            key = _doc_key(doc)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank)
+            by_key.setdefault(key, doc)
+    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    return [by_key[key] for key, _ in ordered[:k]]
+
+
+def _dense_search(
+    query: str,
+    *,
+    k: int,
+    source_filter: list[str] | None,
+) -> list[Document]:
+    where = {"source": {"$in": source_filter}} if source_filter else None
+    retriever = get_retriever(top_k=k, where=where)
+    return retriever.invoke(query)
+
+
+def _bm25_search(
+    query: str,
+    *,
+    k: int,
+    source_filter: list[str] | None,
+) -> list[Document]:
+    settings = get_settings()
+    index = get_bm25_index(settings.rag_bm25_path)
+    if index is None:
+        # No BM25 index on disk -> fall back to dense so the pipeline
+        # still produces something useful instead of an empty result.
+        return _dense_search(query, k=k, source_filter=source_filter)
+    return index.search(query, k=k, source_filter=source_filter)
+
+
 def _retrieve_node(state: RAGState) -> RAGState:
     query = state.get("rewritten_query") or state["query"]
     settings = get_settings()
-    retriever = get_retriever(top_k=settings.rag_top_k)
-    docs = retriever.invoke(query)
+    source_filter = state.get("source_filter") or None
+    k = settings.rag_top_k
+    mode = settings.rag_retrieval_mode
+
+    if mode == "bm25":
+        docs = _bm25_search(query, k=k, source_filter=source_filter)
+    elif mode == "hybrid":
+        # Pull a slightly wider pool from each side so RRF has room to
+        # promote chunks that one side ranked low but the other ranked high.
+        pool = max(k * 2, k + 5)
+        dense_docs = _dense_search(query, k=pool, source_filter=source_filter)
+        bm25_docs = _bm25_search(query, k=pool, source_filter=source_filter)
+        docs = _reciprocal_rank_fusion(
+            [dense_docs, bm25_docs], k=k, rrf_k=settings.rag_rrf_k
+        )
+    else:  # "dense" (default, backward-compatible)
+        docs = _dense_search(query, k=k, source_filter=source_filter)
     return {"retrieved_docs": docs}
 
 

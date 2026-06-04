@@ -46,12 +46,57 @@ _TAO_KEYWORDS = (
 )
 
 
+# Map source-hint labels to the actual PDF filenames in data/documents/.
+# Used to translate the classifier's coarse topic guess into a Chroma /
+# BM25 metadata filter at retrieval time.
+SOURCE_HINT_FILES: dict[str, list[str]] = {
+    "nonprofit": ["13+A+nonprofit+szervezetek+adózása+2025.01.27.pdf"],
+    "calculation": ["41 A társasági adó legfontosabb szabályai 2025.09.01.pdf"],
+    "offering": ["55 Tao-felajánlás 2025.07.21.pdf"],
+    "credit": ["93 Növekedési adóhitel 2025.01.17.pdf"],
+    # "general" intentionally omitted -> no filter.
+}
+
+
+# Keyword fallback for source classification (lowercase, Hungarian).
+_SOURCE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "nonprofit": ("nonprofit", "közhasznú", "alapítvány", "egyesület"),
+    "offering": ("felajánlás", "tao-felajánlás", "kedvezményezett célok"),
+    "credit": ("növekedési adóhitel", "nahi", "adóhitel"),
+    "calculation": (
+        "adóalap", "adómérték", "elhatárolt veszteség",
+        "adókedvezmény", "számítás", "kiszámít",
+    ),
+}
+
+
+def _keyword_source_hint(query: str) -> str:
+    """Deterministic source-hint guess used by the dummy provider and as
+    a fallback when the LLM classifier fails or returns 'general'.
+    """
+    q = query.lower()
+    for hint, kws in _SOURCE_KEYWORDS.items():
+        if any(kw in q for kw in kws):
+            return hint
+    return "general"
+
+
 # ---------------------------------------------------------------------------
 # Structured outputs
 # ---------------------------------------------------------------------------
 class ClassificationVerdict(BaseModel):
     category: str = Field(
         description="Either 'tao' (Hungarian corporate income tax) or 'off_topic'."
+    )
+    source_hint: str = Field(
+        default="general",
+        description=(
+            "Topical hint identifying the most relevant source PDF. One of: "
+            "'nonprofit' (közhasznú/alapítvány), 'calculation' (általános "
+            "TAO-szabályok, adóalap, adómérték, veszteség), 'offering' "
+            "(Tao-felajánlás), 'credit' (növekedési adóhitel/NAHI), or "
+            "'general' if no single source dominates."
+        ),
     )
 
 
@@ -66,14 +111,27 @@ class GroundednessVerdict(BaseModel):
 # ---------------------------------------------------------------------------
 _CLASSIFY_PROMPT = (
     "Te egy magyar adójogi asszisztens vagy. Döntsd el, hogy az alábbi "
-    "kérdés a TÁRSASÁGI ADÓ (Tao. tv.) témakörébe tartozik-e.\n\n"
+    "kérdés a TÁRSASÁGI ADÓ (Tao. tv.) témakörébe tartozik-e, és ha igen, "
+    "melyik forrás a leginkább releváns.\n\n"
     "Kérdés: {query}\n\n"
-    "Válaszolj a megadott szerkezetben: 'tao' vagy 'off_topic'."
+    "Válaszolj a megadott szerkezetben:\n"
+    "  - category: 'tao' vagy 'off_topic'\n"
+    "  - source_hint: 'nonprofit' (közhasznú/alapítvány/egyesület), "
+    "'calculation' (általános TAO, adóalap, adómérték, elhatárolt "
+    "veszteség, adókedvezmény), 'offering' (Tao-felajánlás), "
+    "'credit' (növekedési adóhitel/NAHI), vagy 'general' ha nem egyértelmű."
 )
 
 
+_VALID_SOURCE_HINTS = {"nonprofit", "calculation", "offering", "credit", "general"}
+
+
 def classify_query_node(state: AgentState) -> dict[str, Any]:
-    """Decide whether the question is in scope (TAO) or off-topic."""
+    """Decide whether the question is in scope (TAO) or off-topic.
+
+    Also returns a coarse ``source_hint`` used downstream to filter the
+    retriever to the most relevant PDF.
+    """
     logger.debug("classify_query_node: query=%r", state.get("query"))
     query = state["query"].lower()
     chat = get_chat_model("fast")
@@ -81,15 +139,22 @@ def classify_query_node(state: AgentState) -> dict[str, Any]:
     if isinstance(chat, DummyChatModel):
         # Deterministic keyword match for the offline pipeline.
         category = "tao" if any(kw in query for kw in _TAO_KEYWORDS) else "off_topic"
-        return {"category": category}
+        hint = _keyword_source_hint(query) if category == "tao" else "general"
+        return {"category": category, "source_hint": hint}
 
     classifier = chat.with_structured_output(ClassificationVerdict)
+    hint = "general"
     try:
         verdict: ClassificationVerdict = classifier.invoke(  # type: ignore[assignment]
             _CLASSIFY_PROMPT.format(query=state["query"])
         )
         category = "tao" if verdict.category.lower().strip() == "tao" else "off_topic"
-        logger.debug("classify_query_node: LLM verdict=%r -> %s", verdict.category, category)
+        raw_hint = (verdict.source_hint or "general").lower().strip()
+        hint = raw_hint if raw_hint in _VALID_SOURCE_HINTS else "general"
+        logger.debug(
+            "classify_query_node: LLM verdict=%r/%r -> %s/%s",
+            verdict.category, verdict.source_hint, category, hint,
+        )
     except Exception:
         logger.exception("classify_query_node: LLM classifier failed, falling back to keywords")
         category = "tao" if any(kw in query for kw in _TAO_KEYWORDS) else "off_topic"
@@ -100,7 +165,12 @@ def classify_query_node(state: AgentState) -> dict[str, Any]:
     if category == "off_topic" and any(kw in query for kw in _TAO_KEYWORDS):
         logger.debug("classify_query_node: keyword override 'off_topic' -> 'tao'")
         category = "tao"
-    return {"category": category}
+    # Backstop the hint with the deterministic keyword map so an LLM that
+    # returns 'general' for an obviously nonprofit-shaped question still
+    # gets the right source filter.
+    if category == "tao" and hint == "general":
+        hint = _keyword_source_hint(query)
+    return {"category": category, "source_hint": hint}
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +218,15 @@ def retrieve_documents_node(state: AgentState) -> dict[str, Any]:
     logger.debug("retrieve_documents_node: %d sub-queries", len(sub_queries))
     rag = _get_rag_subgraph()
 
+    source_filter = SOURCE_HINT_FILES.get(state.get("source_hint") or "", [])
+
     seen: set[str] = set()
     merged: list[Document] = []
     for sq in sub_queries:
-        result = rag.invoke({"query": sq})
+        payload: dict[str, Any] = {"query": sq}
+        if source_filter:
+            payload["source_filter"] = source_filter
+        result = rag.invoke(payload)
         for doc in result.get("relevant_docs", []) or result.get("retrieved_docs", []):
             key = f"{doc.metadata.get('source', '')}::{doc.metadata.get('chunk_id', '')}::{doc.page_content[:40]}"
             if key in seen:

@@ -21,6 +21,9 @@ def _isolated_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_PROVIDER", "dummy")
     monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
     monkeypatch.setenv("CHROMA_COLLECTION", "agent_tests")
+    # Avoid picking up an ambient BM25 retrieval mode from the dev shell.
+    monkeypatch.delenv("RAG_RETRIEVAL_MODE", raising=False)
+    monkeypatch.delenv("RAG_BM25_PATH", raising=False)
     get_settings.cache_clear()
     reset_provider_cache()
     # Force the cached subgraph to be rebuilt against the fresh Chroma dir.

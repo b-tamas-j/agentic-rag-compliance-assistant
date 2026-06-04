@@ -19,6 +19,7 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from app.config import get_settings
+from app.rag.bm25 import build_bm25_index, persist_bm25_index, reset_bm25_cache
 from app.rag.splitter import SplitterConfig, split_legal_text
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,29 @@ def ingest_documents(
     return len(docs_list)
 
 
+def build_and_persist_bm25(
+    docs: Iterable[Document],
+    *,
+    bm25_path: Path | None = None,
+) -> int:
+    """Build the BM25 index over ``docs`` and persist it to disk.
+
+    Kept separate from :func:`ingest_documents` so callers (and tests)
+    can opt into the keyword index independently from Chroma.
+    Returns the number of documents indexed.
+    """
+    settings = get_settings()
+    bm25_path = bm25_path or settings.rag_bm25_path
+    docs_list = list(docs)
+    if not docs_list:
+        return 0
+    index = build_bm25_index(docs_list)
+    persist_bm25_index(index, bm25_path)
+    # Invalidate the in-memory cache so retrievers reload from disk.
+    reset_bm25_cache()
+    return len(docs_list)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -163,6 +187,15 @@ def _cli() -> None:  # pragma: no cover - thin wrapper
         default=settings.documents_dir,
         help="Directory containing PDFs / Markdown files to ingest.",
     )
+    parser.add_argument(
+        "--bm25-only",
+        action="store_true",
+        help=(
+            "Skip the Chroma upsert step and only (re)build the BM25 index. "
+            "Useful when the dense store is already populated and we just "
+            "want to add the keyword index without an embedding round-trip."
+        ),
+    )
     args = parser.parse_args()
     logging.basicConfig(level=settings.log_level)
 
@@ -172,8 +205,11 @@ def _cli() -> None:  # pragma: no cover - thin wrapper
         logger.info("%s -> %d chunks", file_path.name, len(chunks))
         all_chunks.extend(chunks)
 
-    total = ingest_documents(all_chunks)
-    logger.info("Indexed %d chunks into Chroma.", total)
+    if not args.bm25_only:
+        total = ingest_documents(all_chunks)
+        logger.info("Indexed %d chunks into Chroma.", total)
+    bm25_count = build_and_persist_bm25(all_chunks)
+    logger.info("Built BM25 index over %d chunks (%s).", bm25_count, settings.rag_bm25_path)
 
 
 if __name__ == "__main__":  # pragma: no cover

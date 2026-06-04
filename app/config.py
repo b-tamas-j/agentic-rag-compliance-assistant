@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 1000
     rag_chunk_overlap: int = 200
     rag_top_k: int = 5
+    # Retrieval strategy: pure dense (default, backward-compatible), pure
+    # BM25 keyword, or hybrid (Reciprocal Rank Fusion of the two).
+    rag_retrieval_mode: Literal["dense", "bm25", "hybrid"] = "dense"
+    # Where the BM25 index pickle lives. Kept next to the Chroma store so
+    # `data/chroma_dummy/` and `data/chroma/` can each have their own.
+    rag_bm25_path: Path = Field(default=Path("./data/chroma/bm25.pkl"))
+    # RRF constant used when combining dense + BM25 rankings.
+    rag_rrf_k: int = 60
 
     # --- Agent ---
     max_hallucination_retries: int = 2

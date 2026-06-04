@@ -144,7 +144,7 @@ data/
   chroma/            Persistent vector store (gitignored)
   eval/              Labelled eval dataset (questions.json)
 reports/             Eval + load-test outputs (gitignored)
-tests/               Pytest suite (44 tests)
+tests/               Pytest suite (60 tests)
 docs/                Architecture notes
 Dockerfile, docker-compose.yml
 ```
@@ -216,6 +216,9 @@ overridden via `.env` or process env vars. The most relevant ones:
 | `OLLAMA_JUDGE_MODEL` | `mistral-nemo:12b` | Separate model for groundedness check |
 | `OLLAMA_EMBEDDING_MODEL` | `bge-m3` | Multilingual embeddings |
 | `RAG_TOP_K` | `5` | Top-K retrieved chunks per sub-query |
+| `RAG_RETRIEVAL_MODE` | `dense` | `dense` (Chroma similarity), `bm25` (keyword), or `hybrid` (RRF of both) |
+| `RAG_BM25_PATH` | `./data/chroma/bm25.pkl` | Where the BM25 index pickle lives |
+| `RAG_RRF_K` | `60` | Reciprocal Rank Fusion constant used in `hybrid` mode |
 | `MAX_HALLUCINATION_RETRIES` | `2` | Cap on the grounded-answer loop |
 | `CHROMA_PERSIST_DIR` | `./data/chroma` | Where ChromaDB persists |
 
@@ -236,6 +239,17 @@ inside long paragraphs, embeds the chunks with `bge-m3`, and upserts
 them into ChromaDB with stable IDs (`{source}::p{page}::c{chunk_id}`)
 so re-running is idempotent. Provenance is preserved in
 `metadata.section` so the validator tool and the UI can surface it.
+
+The same run also builds the BM25 keyword index over those chunks and
+pickles it to `RAG_BM25_PATH` (default `./data/chroma/bm25.pkl`, ~870
+KB on the bundled corpus). If the dense store is already populated and
+you only need to (re)build the keyword index — handy when iterating
+on tokenization without paying the embedding cost — pass
+`--bm25-only`:
+
+```powershell
+uv run python -m app.rag.ingestion --bm25-only
+```
 
 ---
 
@@ -283,6 +297,15 @@ For each question the runner records:
 Outputs land in `reports/eval.csv` plus a stdout summary.
 
 ### 8.1 Results from a sample run (`aya-expanse:8b` mixed profile)
+
+> **Caveat (post-run change).** The numbers below were measured with
+> the *pre-existing* retrieval setup: dense-only Chroma similarity
+> search, no metadata filter. The BM25 keyword index, the
+> `RAG_RETRIEVAL_MODE=dense|bm25|hybrid` switch, and the
+> `source_hint`-based source filter (see §11) were implemented
+> *after* this evaluation run and are **not** reflected in the figures
+> below. Re-running the eval under those new modes is left as a
+> follow-up because a single full run takes ~2.5 h on this box.
 
 I ran the full 15-question evaluation against Ollama with the mixed
 profile (main = `aya-expanse:8b`, fast + judge = `qwen3:0.6b`,
@@ -447,11 +470,15 @@ the headline conclusion.
 uv run pytest -q
 ```
 
-The suite (44 tests) covers:
+The suite (60 tests) covers:
 
 * Configuration & provider factory (`test_config.py`, `test_llm_provider.py`)
 * RAG splitter, ingestion idempotency, retriever round-trip, subgraph
   (`test_rag.py`)
+* BM25 keyword index — build, search, source filter, persist/load,
+  cache invalidation (`test_bm25.py`)
+* Source-hint classification + retrieval-mode dispatch (dense / bm25 /
+  hybrid) + Reciprocal Rank Fusion (`test_source_filter.py`)
 * Tools — calculator rate / loss cap, validator parsing & lookup
   (`test_tools.py`)
 * Agent graph — classifier, off-topic short-circuit, tool firing,
@@ -485,7 +512,7 @@ suite is fast (< 5 s) and deterministic for CI.
   same model for both roles.
 * **Dummy provider in CI.** Every LLM-backed node has a deterministic
   fallback when `LLM_PROVIDER=dummy`, so the full graph runs offline.
-  This is what lets the 44-test suite finish in seconds.
+  This is what lets the 60-test suite finish in seconds.
 * **Tools as one-module-per-file subpackage.** Keeps the boundary
   between deterministic and LLM-driven logic visible and makes it
   easy to bind them to `chat.bind_tools` later if we want to mix in
@@ -493,6 +520,33 @@ suite is fast (< 5 s) and deterministic for CI.
 * **Versioned PDFs in the repo.** ~2 MB total. Trades a bit of repo
   bloat for full reproducibility: anyone can clone and run the
   pipeline with no manual download.
+* **Dense + BM25 + source filter, all opt-in.** The retrieval layer
+  supports three modes via `RAG_RETRIEVAL_MODE`:
+  * `dense` (default, backward-compatible) — pure Chroma similarity
+    search over `bge-m3` embeddings. This is what the §8.1 numbers
+    were measured with.
+  * `bm25` — pure keyword search via `rank_bm25` over a pickled
+    `BM25Okapi` index built at ingestion time
+    (`data/chroma/bm25.pkl`). Useful when the query is dominated by
+    rare legal tokens (paragraph numbers, proper nouns) where the
+    embedding may not place the right chunk near the query in vector
+    space.
+  * `hybrid` — runs both, then combines the rankings with Reciprocal
+    Rank Fusion (`score = Σ 1 / (k + rank)`, default `k=60`). Pulls a
+    wider pool (`2·top_k`) from each side before fusing so RRF has
+    room to promote chunks one side under-ranked.
+
+  On top of that, the classifier now emits a coarse `source_hint`
+  (`nonprofit` / `calculation` / `offering` / `credit` / `general`)
+  which the retrieve node applies as a Chroma `where={"source":
+  {"$in": [...]}}` filter (and as a post-score filter for BM25). This
+  is the cheapest possible "metadata routing" — no extra LLM call, no
+  extra embedding cost — and it keeps off-source chunks out of the
+  context window for narrow questions. Everything degrades gracefully:
+  an unknown hint, a missing BM25 pickle, or a `general` verdict all
+  fall back to the unfiltered dense path. The full eval has **not**
+  been re-run under the new modes (~2.5 h on this box); doing so is
+  the natural next quantitative step.
 
 ---
 

@@ -41,9 +41,18 @@ def get_retriever(
     top_k: int | None = None,
     persist_dir: Path | None = None,
     collection_name: str | None = None,
+    where: dict | None = None,
 ) -> VectorStoreRetriever:
-    """Return a similarity retriever bound to the project's Chroma store."""
+    """Return a similarity retriever bound to the project's Chroma store.
+
+    ``where`` is forwarded as a Chroma metadata filter (e.g.
+    ``{"source": {"$in": ["13+A+nonprofit+...pdf"]}}``) so callers can
+    restrict the search to specific documents.
+    """
     settings = get_settings()
     store = get_vector_store(persist_dir=persist_dir, collection_name=collection_name)
-    return store.as_retriever(search_kwargs={"k": top_k or settings.rag_top_k})
+    search_kwargs: dict = {"k": top_k or settings.rag_top_k}
+    if where:
+        search_kwargs["filter"] = where
+    return store.as_retriever(search_kwargs=search_kwargs)
 

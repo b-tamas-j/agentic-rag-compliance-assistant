@@ -21,6 +21,11 @@ def _isolated_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_PROVIDER", "dummy")
     monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
     monkeypatch.setenv("CHROMA_COLLECTION", "rag_tests")
+    # Guard against ambient RAG_RETRIEVAL_MODE / RAG_BM25_PATH leaking
+    # from the developer shell, which would steer the dense-only tests
+    # below into BM25 mode with no index file -> empty results.
+    monkeypatch.delenv("RAG_RETRIEVAL_MODE", raising=False)
+    monkeypatch.delenv("RAG_BM25_PATH", raising=False)
     get_settings.cache_clear()
     reset_provider_cache()
     yield
