@@ -7,14 +7,17 @@ Kept separate so the judge rubric can be tuned without touching
 from __future__ import annotations
 
 JUDGE_PROMPT = (
-    "Bíró vagy egy magyar társasági adó (TAO) tanácsadó asszisztens kiértékelésében.\n"
-    "Pontozd az alábbi VÁLASZ minőségét három szempont szerint 1-5 skálán.\n\n"
-    "KÉRDÉS:\n{question}\n\n"
-    "FORRÁSOK (RAG):\n{context}\n\n"
-    "VÁLASZ:\n{answer}\n\n"
-    "Adj integer pontszámot a groundedness (mennyire támasztják alá a források), "
-    "relevance (mennyire válaszol a kérdésre) és completeness (mennyire lefedő) "
-    "mezőkre, és írj rövid magyar megjegyzést."
+    "You are an impartial judge evaluating an assistant that answers "
+    "Hungarian corporate income tax (TAO) questions.\n"
+    "Score the ANSWER below on three criteria, each on a 1-5 integer scale.\n\n"
+    "QUESTION:\n{question}\n\n"
+    "SOURCES (RAG):\n{context}\n\n"
+    "ANSWER:\n{answer}\n\n"
+    "Provide integer scores for:\n"
+    "  - groundedness: how well the sources support the answer's claims\n"
+    "  - relevance: how directly the answer addresses the question\n"
+    "  - completeness: how thoroughly the answer covers the expected aspects\n"
+    "Also include a brief Hungarian-language comment explaining the scores."
 )
 
 

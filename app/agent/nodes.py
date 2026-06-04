@@ -302,17 +302,17 @@ def tool_executor_node(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 def _format_context(docs: list[Document]) -> str:
     if not docs:
-        return "(nincs releváns forrás)"
+        return "(no relevant source)"
     lines = []
     for i, doc in enumerate(docs, 1):
         # The section header is the citation-worthy field; the source
         # filename is shown as opaque metadata so the LLM is less likely
         # to splice it into a citation. The prompt above also forbids it
         # explicitly.
-        section = doc.metadata.get("section") or "(nincs §)"
+        section = doc.metadata.get("section") or "(no §)"
         src = doc.metadata.get("source", "?")
         lines.append(
-            f"[{i}] Paragrafus: {section}  | (meta: forrás={src})\n"
+            f"[{i}] Paragraph: {section}  | (meta: source={src})\n"
             f"    {doc.page_content[:400]}"
         )
     return "\n".join(lines)
@@ -323,15 +323,17 @@ def _format_tools(tools: list[dict]) -> str:
 
     Raw ``repr(list[dict])`` is hostile to small chat models, which then
     silently ignore the tool output and re-derive the result themselves
-    (often wrongly). A plain Hungarian summary fixes that.
+    (often wrongly). A plain bullet summary fixes that. Tool outputs
+    themselves (e.g. ``tao_calculator``'s ``explanation``) remain in
+    Hungarian because they are part of the user-facing answer.
     """
     if not tools:
-        return "(nem futott eszköz)"
+        return "(no tool was triggered)"
     lines: list[str] = []
     for t in tools:
         name = t.get("tool", "?")
         if "error" in t:
-            lines.append(f"- {name}: HIBA ({t['error']})")
+            lines.append(f"- {name}: ERROR ({t['error']})")
             continue
         out = t.get("output", {})
         if isinstance(out, dict):

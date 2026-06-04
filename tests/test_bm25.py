@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -89,12 +90,14 @@ def test_get_bm25_index_caches_and_invalidates(tmp_path: Path) -> None:
     second = get_bm25_index(path)
     assert first is second, "Repeated reads with unchanged mtime should hit the cache."
 
-    # Rebuild with a different corpus and persist -> mtime changes ->
-    # cache must reload.
-    other = [
-        Document(page_content="Teljesen más szöveg.", metadata={"source": "x.pdf"})
-    ]
+    # Rebuild with a different corpus and persist -> mtime must change so
+    # the cache reloads. On Windows the filesystem mtime resolution can
+    # be coarser than the time a fast rebuild takes, so bump the mtime
+    # explicitly to make the test deterministic.
+    other = [Document(page_content="Teljesen más szöveg.", metadata={"source": "x.pdf"})]
     persist_bm25_index(build_bm25_index(other), path)
+    bumped = path.stat().st_mtime + 1
+    os.utime(path, (bumped, bumped))
     third = get_bm25_index(path)
     assert third is not None and third is not first
 
